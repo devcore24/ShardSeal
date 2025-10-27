@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -81,6 +82,67 @@ func (l *LocalFS) Delete(ctx context.Context, bucket, key string) error {
 	// best-effort: remove empty parent dirs
 	_ = removeEmptyParents(filepath.Dir(path), filepath.Join(l.base, "objects", bucket))
 	return nil
+}
+
+func (l *LocalFS) List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]ObjectMeta, bool, error) {
+	bdir := filepath.Join(l.base, "objects", bucket)
+	var objects []ObjectMeta
+	
+	err := filepath.WalkDir(bdir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) { return nil }
+			return err
+		}
+		if d.IsDir() { return nil }
+		
+		// Extract relative key from path
+		rel, err := filepath.Rel(bdir, path)
+		if err != nil { return err }
+		key := filepath.ToSlash(rel)
+		
+		// Apply prefix filter
+		if prefix != "" && !strings.HasPrefix(key, prefix) { return nil }
+		
+		// Apply startAfter filter
+		if startAfter != "" && key <= startAfter { return nil }
+		
+		// Get file info
+		info, err := d.Info()
+		if err != nil { return err }
+		
+		// Compute ETag
+		etag, err := md5File(path)
+		if err != nil { return err }
+		
+		objects = append(objects, ObjectMeta{
+			Key:          key,
+			Size:         info.Size(),
+			ETag:         etag,
+			LastModified: info.ModTime().UTC(),
+		})
+		
+		return nil
+	})
+	
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []ObjectMeta{}, false, nil
+		}
+		return nil, false, err
+	}
+	
+	// Sort by key for stable results
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].Key < objects[j].Key
+	})
+	
+	// Apply maxKeys limit and determine if truncated
+	isTruncated := len(objects) > maxKeys
+	if isTruncated {
+		objects = objects[:maxKeys]
+	}
+	
+	return objects, isTruncated, nil
 }
 
 func (l *LocalFS) IsBucketEmpty(ctx context.Context, bucket string) (bool, error) {

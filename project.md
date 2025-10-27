@@ -207,3 +207,27 @@ Compaction & GC
 2) Implement local single-node storage with BeeXL v1 headers/footers and manifest.
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
+
+## Current Status & Progress (Updated 2025-10-27)
+
+### Completed ✅
+- Basic project structure with Go modules, Makefile, CI workflow
+- Core S3 operations implemented and tested:
+  - CreateBucket, DeleteBucket, ListBuckets
+  - PutObject, GetObject, HeadObject, DeleteObject
+  - Range request support for GET operations
+- Metadata store with in-memory implementation
+- Test infrastructure with memStore for fast unit tests
+- LocalFS storage backend (pkg/storage/localfs.go) scaffolded
+
+### In Progress / Next TODO
+1. **ListObjectsV2** - Implement bucket content listing (next immediate task)
+2. **Multipart Upload Support** - InitiateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload
+3. **Connect Real Storage Backend** - Replace test memStore with actual disk-backed storage (localfs.go)
+4. **Erasure Coding Layer** - Implement RS(k=6,m=3) encoding/decoding in pkg/erasure
+5. **BeeXL v1 Storage Format** - Per-shard headers/footers with checksums, object manifests
+6. **AWS Signature V4 Authentication** - Request signing and verification
+7. **Prometheus Metrics** - Request counters, latency histograms, error rates
+8. **Self-Healing Logic** - Read-time repair and background scrubber
+9. **Integration Tests** - S3 compatibility testing with awscli/minio client
+10. **Documentation** - Usage examples, API compatibility notes, deployment guide

@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"s3bee/pkg/metadata"
+	"s3bee/pkg/storage"
 )
 
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
@@ -24,6 +25,7 @@ type objectStore interface {
 	Get(ctx context.Context, bucket, key string) (rc io.ReadCloser, size int64, etag string, lastModified time.Time, err error)
 	Head(ctx context.Context, bucket, key string) (size int64, etag string, lastModified time.Time, err error)
 	Delete(ctx context.Context, bucket, key string) error
+	List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error)
 	IsBucketEmpty(ctx context.Context, bucket string) (bool, error)
 	RemoveBucket(ctx context.Context, bucket string) error
 }
@@ -224,6 +226,13 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBucket(w http.ResponseWriter, r *http.Request, name string) {
 	switch r.Method {
+	case http.MethodGet:
+		// Check for list-type=2 query param for ListObjectsV2
+		if r.URL.Query().Get("list-type") == "2" {
+			s.handleListObjectsV2(w, r, name)
+			return
+		}
+		writeError(w, http.StatusNotImplemented, "NotImplemented", "ListObjects (v1) not implemented; use list-type=2", r.URL.Path, "")
 	case http.MethodPut:
 		s.handleCreateBucket(w, r, name)
 	case http.MethodDelete:
@@ -309,4 +318,101 @@ func isValidBucketName(name string) bool {
 	if !((first >= 'a' && first <= 'z') || (first >= '0' && first <= '9')) { return false }
 	if !((last >= 'a' && last <= 'z') || (last >= '0' && last <= '9')) { return false }
 	return true
+}
+
+// ListObjectsV2 response structures
+type listObjectsV2Result struct {
+	XMLName               xml.Name        `xml:"ListBucketResult"`
+	Xmlns                 string          `xml:"xmlns,attr"`
+	Name                  string          `xml:"Name"`
+	Prefix                string          `xml:"Prefix"`
+	MaxKeys               int             `xml:"MaxKeys"`
+	KeyCount              int             `xml:"KeyCount"`
+	IsTruncated           bool            `xml:"IsTruncated"`
+	ContinuationToken     string          `xml:"ContinuationToken,omitempty"`
+	NextContinuationToken string          `xml:"NextContinuationToken,omitempty"`
+	StartAfter            string          `xml:"StartAfter,omitempty"`
+	Contents              []objectContent `xml:"Contents"`
+}
+
+type objectContent struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+	StorageClass string `xml:"StorageClass"`
+}
+
+func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, bucket string) {
+	ctx := r.Context()
+	ok, _ := s.store.BucketExists(ctx, bucket)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket, "")
+		return
+	}
+
+	q := r.URL.Query()
+	prefix := q.Get("prefix")
+	continuationToken := q.Get("continuation-token")
+	startAfter := q.Get("start-after")
+	maxKeysStr := q.Get("max-keys")
+
+	// Default max-keys is 1000 per S3 spec
+	maxKeys := 1000
+	if maxKeysStr != "" {
+		if mk, err := strconv.Atoi(maxKeysStr); err == nil && mk > 0 {
+			maxKeys = mk
+		}
+	}
+
+	// continuation-token takes precedence over start-after
+	if continuationToken != "" {
+		startAfter = continuationToken
+	}
+
+	// Request one extra to determine if truncated
+	objects, isTruncated, err := s.objs.List(ctx, bucket, prefix, startAfter, maxKeys+1)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+
+	// If we got more than maxKeys, we're truncated
+	var nextToken string
+	if len(objects) > maxKeys {
+		isTruncated = true
+		nextToken = objects[maxKeys-1].Key
+		objects = objects[:maxKeys]
+	}
+
+	result := listObjectsV2Result{
+		Xmlns:         "http://s3.amazonaws.com/doc/2006-03-01/",
+		Name:          bucket,
+		Prefix:        prefix,
+		MaxKeys:       maxKeys,
+		KeyCount:      len(objects),
+		IsTruncated:   isTruncated,
+		StartAfter:    startAfter,
+	}
+
+	if continuationToken != "" {
+		result.ContinuationToken = continuationToken
+	}
+	if isTruncated && nextToken != "" {
+		result.NextContinuationToken = nextToken
+	}
+
+	for _, obj := range objects {
+		result.Contents = append(result.Contents, objectContent{
+			Key:          obj.Key,
+			LastModified: obj.LastModified.UTC().Format(time.RFC3339),
+			ETag:         quoteETag(obj.ETag),
+			Size:         obj.Size,
+			StorageClass: "STANDARD",
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_ = xml.NewEncoder(w).Encode(result)
 }

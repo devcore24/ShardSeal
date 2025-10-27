@@ -12,8 +12,10 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"strings"
+	"sort"
 
 	"s3bee/pkg/metadata"
+	"s3bee/pkg/storage"
 )
 
 // stub object store that keeps objects in memory for fast tests
@@ -50,6 +52,31 @@ func (m *memStore) Delete(_ context.Context, bucket, key string) error {
 	if _, ok := m.objs[k]; !ok { return os.ErrNotExist }
 	delete(m.objs, k)
 	return nil
+}
+func (m *memStore) List(_ context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error) {
+	pfx := bucket + "/"
+	if prefix != "" { pfx = bucket + "/" + prefix }
+	var keys []string
+	for k := range m.objs {
+		if strings.HasPrefix(k, pfx) {
+			key := strings.TrimPrefix(k, bucket+"/")
+			if startAfter == "" || key > startAfter {
+				keys = append(keys, key)
+			}
+		}
+	}
+	// Sort for stable results
+	sort.Strings(keys)
+	// Limit to maxKeys
+	var result []storage.ObjectMeta
+	for i, key := range keys {
+		if i >= maxKeys { break }
+		o := m.objs[bucket+"/"+key]
+		result = append(result, storage.ObjectMeta{
+			Key: key, Size: int64(len(o.data)), ETag: o.etag, LastModified: time.Now().UTC(),
+		})
+	}
+	return result, len(keys) > maxKeys, nil
 }
 func (m *memStore) IsBucketEmpty(_ context.Context, bucket string) (bool, error) {
 	prefix := bucket+"/"
@@ -142,6 +169,89 @@ func TestBucket_DeleteLifecycle(t *testing.T) {
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
 	if w.Code != 204 { t.Fatalf("delete bucket expected 204, got %d", w.Code) }
+}
+
+func TestListObjectsV2_Basic(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	// Put some objects
+	_, _, _ = objs.Put(context.Background(), "bkt", "a.txt", bytes.NewBufferString("a"))
+	_, _, _ = objs.Put(context.Background(), "bkt", "b.txt", bytes.NewBufferString("bb"))
+	_, _, _ = objs.Put(context.Background(), "bkt", "c.txt", bytes.NewBufferString("ccc"))
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// List all objects
+	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	body := w.Body.String()
+	if !bytes.Contains(w.Body.Bytes(), []byte("a.txt")) { t.Fatalf("expected a.txt in list: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("b.txt")) { t.Fatalf("expected b.txt in list: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("c.txt")) { t.Fatalf("expected c.txt in list: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) { t.Fatalf("expected KeyCount 3: %s", body) }
+}
+
+func TestListObjectsV2_Prefix(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	_, _, _ = objs.Put(context.Background(), "bkt", "docs/a.txt", bytes.NewBufferString("a"))
+	_, _, _ = objs.Put(context.Background(), "bkt", "docs/b.txt", bytes.NewBufferString("b"))
+	_, _, _ = objs.Put(context.Background(), "bkt", "images/x.png", bytes.NewBufferString("x"))
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// List with prefix
+	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2&prefix=docs/", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	body := w.Body.String()
+	if !bytes.Contains(w.Body.Bytes(), []byte("docs/a.txt")) { t.Fatalf("expected docs/a.txt: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("docs/b.txt")) { t.Fatalf("expected docs/b.txt: %s", body) }
+	if bytes.Contains(w.Body.Bytes(), []byte("images/x.png")) { t.Fatalf("should not have images/x.png: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>2</KeyCount>")) { t.Fatalf("expected KeyCount 2: %s", body) }
+}
+
+func TestListObjectsV2_MaxKeys(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	for i := 0; i < 10; i++ {
+		key := string(rune('a' + i)) + ".txt"
+		_, _, _ = objs.Put(context.Background(), "bkt", key, bytes.NewBufferString("x"))
+	}
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// List with max-keys=3
+	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2&max-keys=3", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	body := w.Body.String()
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) { t.Fatalf("expected KeyCount 3: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>true</IsTruncated>")) { t.Fatalf("expected IsTruncated true: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<NextContinuationToken>")) { t.Fatalf("expected NextContinuationToken: %s", body) }
+}
+
+func TestListObjectsV2_Empty(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	body := w.Body.String()
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>0</KeyCount>")) { t.Fatalf("expected KeyCount 0: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>false</IsTruncated>")) { t.Fatalf("expected IsTruncated false: %s", body) }
 }
 
 // helpers
