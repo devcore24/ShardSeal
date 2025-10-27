@@ -4,7 +4,7 @@ build:
 	GO111MODULE=on go build ./...
 
 run:
-	GO111MODULE=on go run ./cmd/s3bee
+	GO111MODULE=on go run ./cmd/s3free
 
 test:
 	GO111MODULE=on go test ./...

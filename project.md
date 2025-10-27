@@ -1,4 +1,4 @@
-# s3bee — Open S3-compatible, self-healing object store (Go)
+# s3free — Open S3-compatible, self-healing object store (Go)
 
 A cross‑platform, open-source object/file storage system offering S3 compatibility with built‑in self-healing, strong data integrity, and corruption recovery—without enterprise gates. Written in Go.
 
@@ -138,7 +138,7 @@ Compaction & GC
 - Error codes and semantics aligned with S3 where practical; documented deviations.
 
 ## CLI & Configuration (high level)
-- Single binary: `s3bee` with subcommands `server`, `disk`, `cluster`, `admin`, `bench`.
+- Single binary: `s3free` with subcommands `server`, `disk`, `cluster`, `admin`, `bench`.
 - Config file (YAML) + env overrides; hot-reload for select settings.
 - Examples: local single-node with N disks (paths), distributed join via peer list.
 
@@ -180,7 +180,7 @@ Compaction & GC
 - Compatibility edge cases (multipart ETag, range on encrypted objects): document and test early.
 
 ## Repository Layout (proposal)
-- cmd/s3bee: main entrypoint
+- cmd/s3free: main entrypoint
 - pkg/api/s3: S3 HTTP handlers, SigV4
 - pkg/metadata: Raft, manifests, bucket state, multipart
 - pkg/storage: disk I/O, shard files, scrubber, compaction
@@ -211,119 +211,75 @@ Compaction & GC
 ## Current Status & Progress (Updated 2025-10-27)
 
 ### Completed ✅
-- Basic project structure with Go modules, Makefile, CI workflow
-- Core S3 operations implemented and tested:
-  - **CreateBucket, DeleteBucket, ListBuckets**
-  - **PutObject, GetObject, HeadObject, DeleteObject**
-  - **ListObjectsV2** with prefix, max-keys, pagination support
-  - Range request support for GET operations
-- Metadata store with in-memory implementation
-- Storage layer with ObjectStore interface
-- LocalFS storage backend with full List implementation
-- Test infrastructure with memStore for fast unit tests
+- Project scaffold: modules, Makefile, CI
+- Config loader (YAML + env overrides) and data-dir creation
+- Structured logging with slog
+- S3 basics implemented and tested:
+  - CreateBucket, DeleteBucket, ListBuckets
+  - PutObject, GetObject (with Range), HeadObject, DeleteObject
+- In-memory metadata store (buckets)
+- Local filesystem ObjectStore (dev/MVP)
+- Unit tests for buckets/objects
 
-### In Progress / Next TODO
-1. ✅ **ListObjectsV2** - Bucket content listing (COMPLETED)
-2. **Multipart Upload Support** - InitiateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload (NEXT)
-3. **Connect Real Storage Backend** - Wire up LocalFS to main server, replace memStore in integration
-4. **Erasure Coding Layer** - Implement RS(k=6,m=3) encoding/decoding in pkg/erasure
-5. **BeeXL v1 Storage Format** - Per-shard headers/footers with checksums, object manifests
-6. **AWS Signature V4 Authentication** - Request signing and verification
-7. **Prometheus Metrics** - Request counters, latency histograms, error rates
-8. **Self-Healing Logic** - Read-time repair and background scrubber
-9. **Integration Tests** - S3 compatibility testing with awscli/minio client
-10. **Documentation** - API compatibility matrix, deployment guide
+### Next Up 🚧
+1) ListObjectsV2 (prefix, delimiter, max-keys, continuation-token)
+2) Multipart Upload (initiate/upload-part/complete/abort)
+3) AWS SigV4 auth (disable via config for local dev)
+4) Observability: Prometheus metrics and basic traces
+5) BeeXL v1 storage spec and RS(k,m) codec scaffolding
+6) Background scrubber interfaces (no-op impl)
 
 ## Development Guide
 
 ### Building & Running Tests
 
 ```bash
-# Build the project
 make build
-
-# Run all tests
 go test ./...
-
-# Run tests with verbose output
-go test ./... -v
-
-# Run tests for specific package
-go test ./pkg/api/s3/... -v
-
-# Run specific test
-go test ./pkg/api/s3/... -v -run TestListObjectsV2_Basic
-
-# Run with coverage
-go test ./... -cover
-
-# Build the binary
-go build -o s3bee ./cmd/s3bee
 ```
 
 ### Running the Server
 
 ```bash
-# Run with default config
-./s3bee server
-
-# Or using go run
-go run ./cmd/s3bee server
-
-# With custom config
-./s3bee server -config configs/local.yaml
+# Using sample config
+S3FREE_CONFIG=configs/local.yaml make run
+# Or
+go run ./cmd/s3free
 ```
 
-### Testing with curl
-
-**Note:** Current implementation does NOT have authentication yet, so these are raw HTTP requests.
+### Testing with curl (current features)
 
 ```bash
 # List all buckets
 curl -v http://localhost:8080/
 
-# Create a bucket
+# Create a bucket (3-63 chars, lowercase/digits/dot/hyphen)
 curl -v -X PUT http://localhost:8080/my-bucket
 
-# Put an object
-echo "Hello, S3bee!" | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
+# Put object from stdin
+printf 'Hello, s3free!\n' | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
 
-# Put object from file
-curl -v -X PUT http://localhost:8080/my-bucket/test.txt --data-binary @file.txt
-
-# Get an object
+# Get object
 curl -v http://localhost:8080/my-bucket/hello.txt
 
-# Head object (metadata only)
-curl -v -I http://localhost:8080/my-bucket/hello.txt
+# Range GET (first 10 bytes)
+curl -v -H 'Range: bytes=0-9' http://localhost:8080/my-bucket/hello.txt
 
-# List objects in bucket (ListObjectsV2)
-curl -v "http://localhost:8080/my-bucket?list-type=2"
+# Head object
+curl -I http://localhost:8080/my-bucket/hello.txt
 
-# List with prefix
-curl -v "http://localhost:8080/my-bucket?list-type=2&prefix=docs/"
+# Delete object
+curl -X DELETE http://localhost:8080/my-bucket/hello.txt
 
-# List with max-keys (pagination)
-curl -v "http://localhost:8080/my-bucket?list-type=2&max-keys=10"
-
-# List with start-after (pagination)
-curl -v "http://localhost:8080/my-bucket?list-type=2&start-after=docs/a.txt"
-
-# Range request
-curl -v -H "Range: bytes=0-9" http://localhost:8080/my-bucket/hello.txt
-
-# Delete an object
-curl -v -X DELETE http://localhost:8080/my-bucket/hello.txt
-
-# Delete a bucket (must be empty)
-curl -v -X DELETE http://localhost:8080/my-bucket
+# Delete bucket (must be empty)
+curl -X DELETE http://localhost:8080/my-bucket
 ```
 
 ### Project Structure
 
 ```
-s3bee/
-├── cmd/s3bee/           # Main entry point
+s3free/
+├── cmd/s3free/           # Main entry point
 ├── pkg/
 │   ├── api/s3/         # S3 HTTP handlers, routing
 │   ├── metadata/       # Bucket/object metadata store
@@ -341,60 +297,119 @@ s3bee/
 
 
 
+Review, and needed fixes:
+This review will focus on a few key areas that could be improved or might pose problems as the project grows. I won't focus on minor style nits, as the code is already very readable.
 
+### High-Level Architectural Observations
 
-info about latest changes:
-Perfect! Let me create a final summary:
+*   **Excellent Structure:** The dependency injection (`New(store, objs)`) is a great pattern. The main `route` function is a clean entry point that correctly dispatches requests to more specific handlers.
+*   **Clear S3 Logic:** The implementation of core S3 operations (ListBuckets, Put/Get/Head/Delete Object, ListObjectsV2) correctly follows the S3 REST API conventions (path parsing, HTTP methods, query parameters).
+*   **Good Readability:** The code is idiomatic Go. Function and variable names are clear, and the logic is straightforward.
 
-   Summary
+### Potential Issues and "Huge Mistakes" to Avoid
 
-   Successfully implemented complete multipart upload support for s3bee! Here's what was accomplished:
+Here are some areas that stand out as potential problems, ranging from correctness bugs to significant performance issues.
 
-   Changes Made:
+#### 1. Inefficient Range GET Fallback (Potential for High Memory Usage)
 
-   1. Metadata Store (pkg/metadata/store.go):
-     •  Added MultipartUpload and Part data structures
-     •  Extended Store interface with 5 new methods:
-       •  InitiateMultipartUpload - Creates new upload with unique ID
-       •  GetMultipartUpload - Retrieves upload metadata
-       •  PutPart - Records uploaded part
-       •  CompleteMultipartUpload - Finalizes upload
-       •  AbortMultipartUpload - Cancels upload
-     •  Implemented all methods in MemoryStore with thread-safe operations
+In `handleObject` -> `http.MethodGet`:
+```go
+// Fallback: read all and slice (inefficient, test-only)
+b, _ := io.ReadAll(rc)
+// ...
+_, _ = w.Write(b[start : end+1])
+```
+You've correctly identified this as inefficient, but it's worth highlighting how dangerous this can be. If a user requests a small byte range from a multi-gigabyte (or terabyte) object, your server will **read the entire object into memory** before sending a small slice to the client. This will exhaust server memory and crash the application.
 
-   2. S3 API Server (pkg/api/s3/server.go):
-     •  Added routing logic to detect multipart operations via query parameters
-     •  Implemented 4 handler functions:
-       •  handleInitiateMultipartUpload - Returns XML with uploadId
-       •  handleUploadPart - Stores part as temporary object, validates part numbers (1-10000)
-       •  handleCompleteMultipartUpload - Validates parts, concatenates data, creates final object
-       •  handleAbortMultipartUpload - Cleans up parts and metadata
-     •  Fixed query parameter handling for valueless params like ?uploads
+*   **Recommendation:** The `io.ReadSeeker` check is the correct primary path. However, the `objectStore` interface should guarantee that the returned `io.ReadCloser` also implements `io.ReadSeeker` if range requests are to be supported efficiently. The fallback should probably be removed or return a `501 Not Implemented` error to prevent a catastrophic memory allocation.
 
-   3. Comprehensive Tests (pkg/api/s3/server_test.go):
-     •  TestMultipartUpload_Complete - Full workflow with 2 parts
-     •  TestMultipartUpload_Abort - Abort scenario with cleanup verification
-     •  Both tests verify correct HTTP status codes and final object state
+#### 2. Inefficient `CompleteMultipartUpload` (Major Scalability Bottleneck)
 
-   All Tests Passing ✅
-   •  9 test cases pass (7 existing + 2 new multipart tests)
-   •  Build succeeds without errors
-   •  Changes committed to git
+In `handleCompleteMultipartUpload`:
+```go
+// Combine parts into final object (simplified: concatenate)
+// In production, this would stream parts in order
+var combinedData []byte
+for i := 1; i <= len(upload.Parts); i++ {
+    // ...
+    rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
+    // ...
+    data, _ := io.ReadAll(rc)
+    rc.Close()
+    combinedData = append(combinedData, data...)
+}
+// Write the final object
+etag, _, err := s.objs.Put(ctx, bucket, key, strings.NewReader(string(combinedData)))
+```
+This is the most critical issue in the file. Much like the Range GET fallback, this implementation reads **all parts of a multipart upload into a single memory buffer** (`combinedData`) before writing the final object. A user uploading a 100GB file would require your server to have over 100GB of RAM just to complete the upload.
 
-   What Works Now:
+*   **Recommendation:** This process must be implemented as a streaming operation. The `objectStore.Put` method should ideally accept an `io.Reader`. You can then create an `io.MultiReader` that wraps the readers for each part in sequence. This way, you read from each part file and write to the final object file in chunks, with minimal memory overhead.
 
-   bash
-     # Initiate multipart upload
-     curl -X POST "http://localhost:8080/bucket/large-file?uploads"
+    ```go
+    // Conceptual Example
+    var partReaders []io.Reader
+    var partClosers []io.ReadCloser // To close them later
+    for i := 1; i <= len(upload.Parts); i++ {
+        partKey := // ...
+        rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
+        // handle error
+        partReaders = append(partReaders, rc)
+        partClosers = append(partClosers, rc)
+    }
+    defer func() {
+        for _, closer := range partClosers {
+            closer.Close()
+        }
+    }()
 
-     # Upload parts
-     curl -X PUT "http://localhost:8080/bucket/large-file?uploadId=ID&partNumber=1" --data-binary @part1
-     curl -X PUT "http://localhost:8080/bucket/large-file?uploadId=ID&partNumber=2" --data-binary @part2
+    combinedReader := io.MultiReader(partReaders...)
+    etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
+    ```
 
-     # Complete upload
-     curl -X POST "http://localhost:8080/bucket/large-file?uploadId=ID" --data '<CompleteMultipartUpload>...'
+#### 3. Error Handling and Ignored Errors
 
-     # Abort upload
-     curl -X DELETE "http://localhost:8080/bucket/large-file?uploadId=ID"
+There are numerous places where errors are ignored with `_ = ...`. While sometimes acceptable for closing operations in `defer`, it can hide bugs in critical paths.
 
-   The implementation follows S3 API conventions and properly handles part validation, ETag matching, and cleanup!
+*   `_ = xml.NewEncoder(w).Encode(res)` in `handleListBuckets` and elsewhere. If the client closes the connection midway, this will return an error. While you can't do much about it, logging it can be useful for debugging.
+*   `_ = s.store.DeleteBucket(ctx, name)` in `handleDeleteBucket`. What if `s.objs.RemoveBucket` succeeds but `s.store.DeleteBucket` fails? You now have an orphaned bucket on the filesystem that doesn't exist in your metadata. This is a consistency issue. The operation should be atomic or have a rollback mechanism.
+
+*   **Recommendation:** At a minimum, log these ignored errors. For critical metadata operations, consider how to handle partial failures to prevent state inconsistency.
+
+#### 4. Concurrency and Race Conditions (Implicit Issue)
+
+Your code doesn't have any explicit locking, which implies that the `metadata.Store` and `objectStore` implementations must be safe for concurrent use. This is a perfectly valid design choice, but it's a critical one.
+
+*   For example, in `handleCreateBucket`, you have a "check-then-act" sequence:
+    1.  `ok, _ := s.store.BucketExists(ctx, name)`
+    2.  `if err := s.store.CreateBucket(ctx, name); err != nil { ... }`
+
+    If two requests to create the same bucket arrive at nearly the same time, it's possible for both to pass the `BucketExists` check before either has a chance to call `CreateBucket`. The `CreateBucket` implementation itself must be atomic to handle this. Make sure this is documented in your interfaces.
+
+### Minor Suggestions and Code Improvements
+
+*   **Multipart Part Storage:** Storing parts under a visible path like `/.multipart/` within the same bucket could be problematic. Clients performing a `ListObjectsV2` might see these temporary files if the prefix matches. A common pattern is to use a separate, hidden "staging" area or to use object keys that are suffixed with upload IDs and part numbers in a way that is unlikely to be listed by users.
+*   **Range Parsing Robustness:** Your `parseRange` function is quite good. However, S3 clients can be quirky. It's solid for a starting point, but be prepared to encounter more edge cases as you test with different S3 clients (e.g., multiple ranges, which you are correctly not supporting yet).
+*   **Magic Numbers/Strings:** Use constants for common strings like XML namespaces, error codes (`"NoSuchBucket"`), and query parameters (`"list-type"`). This prevents typos and makes the code easier to maintain.
+    ```go
+    const (
+        s3Xmlns         = "http://s3.amazonaws.com/doc/2006-03-01/"
+        errCodeNoSuchBucket = "NoSuchBucket"
+    )
+    ```
+*   **Continuation Token Logic in `ListObjectsV2`:**
+    ```go
+    nextToken = objects[maxKeys-1].Key
+    objects = objects[:maxKeys]
+    ```
+    This is a common and correct pattern. Just ensure that the `objectStore.List` implementation guarantees a stable, alphabetical sort order for keys. If the order is not guaranteed, pagination will be unreliable.
+
+### Summary
+
+You do not have any "huge mistakes" that require a complete rewrite. The foundation is solid. The primary actions you should take are:
+
+1.  **Fix the `CompleteMultipartUpload` memory usage immediately.** This is a critical scalability bug.
+2.  **Fix the Range GET fallback memory usage.** This is also a critical stability bug.
+3.  **Review error handling for metadata consistency.** Decide on a strategy for handling partial failures (e.g., in `handleDeleteBucket`).
+4.  **Ensure your backend implementations are concurrent-safe**, especially for "check-then-act" operations.
+
+This is a fantastic start to a complex project. Keep up the great work

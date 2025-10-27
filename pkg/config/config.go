@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds runtime configuration for s3bee.
+// Config holds runtime configuration for s3free.
 //
 // YAML example:
 //   address: ":8080"
@@ -18,8 +18,8 @@ import (
 //     - "./data"
 //
 // Environment overrides:
-//   S3BEE_ADDR overrides Address when set.
-//   S3BEE_CONFIG path to YAML config file; if empty, loader tries ./config.yaml then defaults.
+//   S3FREE_ADDR overrides Address when set.
+//   S3FREE_CONFIG path to YAML config file; if empty, loader tries ./config.yaml then defaults.
 //
 // Backward-compatible defaults should be maintained across versions.
 // Avoid silently changing default directories.
@@ -88,10 +88,10 @@ func EnsureDirs(cfg Config) error {
 }
 
 func applyEnvOverrides(cfg Config) Config {
-	if v := os.Getenv("S3BEE_ADDR"); v != "" {
+	if v := os.Getenv("S3FREE_ADDR"); v != "" {
 		cfg.Address = v
 	}
-	if v := os.Getenv("S3BEE_DATA_DIRS"); v != "" {
+	if v := os.Getenv("S3FREE_DATA_DIRS"); v != "" {
 		// Comma-separated list
 		cfg.DataDirs = splitAndTrim(v)
 	}

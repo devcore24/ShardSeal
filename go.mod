@@ -1,4 +1,4 @@
-module s3bee
+module s3free
 
 go 1.22
 

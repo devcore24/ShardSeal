@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sort"
 
-	"s3bee/pkg/metadata"
-	"s3bee/pkg/storage"
+	"s3free/pkg/metadata"
+	"s3free/pkg/storage"
 )
 
 // stub object store that keeps objects in memory for fast tests

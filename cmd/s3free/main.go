@@ -9,17 +9,17 @@ import (
 	"syscall"
 	"time"
 
-	"s3bee/pkg/config"
-	"s3bee/pkg/api/s3"
-	"s3bee/pkg/metadata"
-	"s3bee/pkg/storage"
+	"s3free/pkg/config"
+	"s3free/pkg/api/s3"
+	"s3free/pkg/metadata"
+	"s3free/pkg/storage"
 )
 
 var version = "0.0.1-dev"
 
 func main() {
-	// Load config from S3BEE_CONFIG or ./config.yaml; defaults otherwise.
-	cfgPath := os.Getenv("S3BEE_CONFIG")
+	// Load config from S3FREE_CONFIG or ./config.yaml; defaults otherwise.
+	cfgPath := os.Getenv("S3FREE_CONFIG")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		slog.Error("failed to load config", slog.String("error", err.Error()))
@@ -51,7 +51,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("s3bee listening", slog.String("version", version), slog.String("addr", cfg.Address))
+		slog.Info("s3free listening", slog.String("version", version), slog.String("addr", cfg.Address))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -67,5 +67,5 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", slog.String("error", err.Error()))
 	}
-	slog.Info("s3bee stopped")
+	slog.Info("s3free stopped")
 }

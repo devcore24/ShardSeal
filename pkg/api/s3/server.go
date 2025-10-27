@@ -9,8 +9,8 @@ import (
 	"time"
 	"strconv"
 
-	"s3bee/pkg/metadata"
-	"s3bee/pkg/storage"
+	"s3free/pkg/metadata"
+	"s3free/pkg/storage"
 )
 
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
@@ -95,7 +95,7 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 			s.handleCompleteMultipartUpload(w, r, bucket, key, uploadID)
 			return
 		} else if r.Method == http.MethodDelete {
-			s.handleAbortMultipartUpload(w, r, uploadID)
+			s.handleAbortMultipartUpload(w, r, bucket, key, uploadID)
 			return
 		} else if r.Method == http.MethodPut && q.Get("partNumber") != "" {
 			s.handleUploadPart(w, r, bucket, key, uploadID)
@@ -492,7 +492,7 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket
 	}
 	
 	// Upload the part (for now, store it as a temporary object)
-	partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(partNum)
+	partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
 	etag, size, err := s.objs.Put(ctx, bucket, partKey, r.Body)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
@@ -565,7 +565,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	// In production, this would stream parts in order
 	var combinedData []byte
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(i)
+		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
 		rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "InternalError", "Failed to retrieve part data.", r.URL.Path, "")
@@ -585,7 +585,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	
 	// Clean up parts
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(i)
+		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
 		_ = s.objs.Delete(ctx, bucket, partKey)
 	}
 	
@@ -609,7 +609,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	_ = xml.NewEncoder(w).Encode(result)
 }
 
-func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, uploadID string) {
+func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string) {
 	ctx := r.Context()
 	
 	// Get upload metadata to clean up parts
@@ -621,8 +621,8 @@ func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Reque
 	
 	// Delete all parts
 	for partNum := range upload.Parts {
-		partKey := upload.Bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(partNum)
-		_ = s.objs.Delete(ctx, upload.Bucket, partKey)
+		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
+		_ = s.objs.Delete(ctx, bucket, partKey)
 	}
 	
 	// Abort in metadata
