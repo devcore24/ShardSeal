@@ -1,0 +1,16 @@
+# Build artifacts
+/bin/
+/build/
+/dist/
+/coverage.out
+*.coverprofile
+*.test
+*.log
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Local data directories
+/data/
+/tmp/

@@ -1,0 +1,5 @@
+# Local example config
+address: ":8080"
+# One or more data directories (created if missing)
+dataDirs:
+  - "./data"
