@@ -213,21 +213,128 @@ Compaction & GC
 ### Completed ✅
 - Basic project structure with Go modules, Makefile, CI workflow
 - Core S3 operations implemented and tested:
-  - CreateBucket, DeleteBucket, ListBuckets
-  - PutObject, GetObject, HeadObject, DeleteObject
+  - **CreateBucket, DeleteBucket, ListBuckets**
+  - **PutObject, GetObject, HeadObject, DeleteObject**
+  - **ListObjectsV2** with prefix, max-keys, pagination support
   - Range request support for GET operations
 - Metadata store with in-memory implementation
+- Storage layer with ObjectStore interface
+- LocalFS storage backend with full List implementation
 - Test infrastructure with memStore for fast unit tests
-- LocalFS storage backend (pkg/storage/localfs.go) scaffolded
 
 ### In Progress / Next TODO
-1. **ListObjectsV2** - Implement bucket content listing (next immediate task)
-2. **Multipart Upload Support** - InitiateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload
-3. **Connect Real Storage Backend** - Replace test memStore with actual disk-backed storage (localfs.go)
+1. ✅ **ListObjectsV2** - Bucket content listing (COMPLETED)
+2. **Multipart Upload Support** - InitiateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload (NEXT)
+3. **Connect Real Storage Backend** - Wire up LocalFS to main server, replace memStore in integration
 4. **Erasure Coding Layer** - Implement RS(k=6,m=3) encoding/decoding in pkg/erasure
 5. **BeeXL v1 Storage Format** - Per-shard headers/footers with checksums, object manifests
 6. **AWS Signature V4 Authentication** - Request signing and verification
 7. **Prometheus Metrics** - Request counters, latency histograms, error rates
 8. **Self-Healing Logic** - Read-time repair and background scrubber
 9. **Integration Tests** - S3 compatibility testing with awscli/minio client
-10. **Documentation** - Usage examples, API compatibility notes, deployment guide
+10. **Documentation** - API compatibility matrix, deployment guide
+
+## Development Guide
+
+### Building & Running Tests
+
+```bash
+# Build the project
+make build
+
+# Run all tests
+go test ./...
+
+# Run tests with verbose output
+go test ./... -v
+
+# Run tests for specific package
+go test ./pkg/api/s3/... -v
+
+# Run specific test
+go test ./pkg/api/s3/... -v -run TestListObjectsV2_Basic
+
+# Run with coverage
+go test ./... -cover
+
+# Build the binary
+go build -o s3bee ./cmd/s3bee
+```
+
+### Running the Server
+
+```bash
+# Run with default config
+./s3bee server
+
+# Or using go run
+go run ./cmd/s3bee server
+
+# With custom config
+./s3bee server -config configs/local.yaml
+```
+
+### Testing with curl
+
+**Note:** Current implementation does NOT have authentication yet, so these are raw HTTP requests.
+
+```bash
+# List all buckets
+curl -v http://localhost:8080/
+
+# Create a bucket
+curl -v -X PUT http://localhost:8080/my-bucket
+
+# Put an object
+echo "Hello, S3bee!" | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
+
+# Put object from file
+curl -v -X PUT http://localhost:8080/my-bucket/test.txt --data-binary @file.txt
+
+# Get an object
+curl -v http://localhost:8080/my-bucket/hello.txt
+
+# Head object (metadata only)
+curl -v -I http://localhost:8080/my-bucket/hello.txt
+
+# List objects in bucket (ListObjectsV2)
+curl -v "http://localhost:8080/my-bucket?list-type=2"
+
+# List with prefix
+curl -v "http://localhost:8080/my-bucket?list-type=2&prefix=docs/"
+
+# List with max-keys (pagination)
+curl -v "http://localhost:8080/my-bucket?list-type=2&max-keys=10"
+
+# List with start-after (pagination)
+curl -v "http://localhost:8080/my-bucket?list-type=2&start-after=docs/a.txt"
+
+# Range request
+curl -v -H "Range: bytes=0-9" http://localhost:8080/my-bucket/hello.txt
+
+# Delete an object
+curl -v -X DELETE http://localhost:8080/my-bucket/hello.txt
+
+# Delete a bucket (must be empty)
+curl -v -X DELETE http://localhost:8080/my-bucket
+```
+
+### Project Structure
+
+```
+s3bee/
+├── cmd/s3bee/           # Main entry point
+├── pkg/
+│   ├── api/s3/         # S3 HTTP handlers, routing
+│   ├── metadata/       # Bucket/object metadata store
+│   ├── storage/        # Object storage layer (LocalFS, erasure coding)
+│   ├── erasure/        # Reed-Solomon erasure coding
+│   ├── config/         # Configuration management
+│   ├── obs/            # Observability (metrics, tracing)
+│   ├── placement/      # Consistent hashing, placement
+│   ├── repair/         # Self-healing, scrubbing
+│   └── security/       # Authentication, encryption
+├── internal/testutil/  # Test utilities
+├── configs/            # Sample configurations
+└── data/               # Default data directory (local dev)
+```
