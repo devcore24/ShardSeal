@@ -217,17 +217,25 @@ Compaction & GC
 - S3 basics implemented and tested:
   - CreateBucket, DeleteBucket, ListBuckets
   - PutObject, GetObject (with Range), HeadObject, DeleteObject
-- In-memory metadata store (buckets)
+  - ListObjectsV2 (prefix, max-keys, continuation-token)
+  - Multipart Upload (initiate/upload-part/complete/abort)
+- In-memory metadata store (buckets + multipart uploads)
 - Local filesystem ObjectStore (dev/MVP)
-- Unit tests for buckets/objects
+- Unit tests for buckets/objects/multipart
+- **Critical fixes applied (2025-10-27):**
+  - Fixed CompleteMultipartUpload to use streaming (prevents memory exhaustion)
+  - Fixed Range GET fallback (now returns 501 instead of loading entire file)
+  - Improved error handling and logging for metadata consistency
+  - Added constants for S3 error codes and query parameters
+  - Documented concurrency safety requirements for Store and ObjectStore interfaces
+  - Fixed bucket deletion to exclude .multipart temporary files from empty check
 
 ### Next Up 🚧
-1) ListObjectsV2 (prefix, delimiter, max-keys, continuation-token)
-2) Multipart Upload (initiate/upload-part/complete/abort)
-3) AWS SigV4 auth (disable via config for local dev)
-4) Observability: Prometheus metrics and basic traces
-5) BeeXL v1 storage spec and RS(k,m) codec scaffolding
-6) Background scrubber interfaces (no-op impl)
+1) AWS SigV4 auth (disable via config for local dev)
+2) Observability: Prometheus metrics and basic traces
+3) BeeXL v1 storage spec and RS(k,m) codec scaffolding
+4) Background scrubber interfaces (no-op impl)
+5) Consider moving .multipart storage to separate hidden area (optional optimization)
 
 ## Development Guide
 

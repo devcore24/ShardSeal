@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,37 @@ import (
 
 	"s3free/pkg/metadata"
 	"s3free/pkg/storage"
+)
+
+// S3 API constants
+const (
+	s3Xmlns = "http://s3.amazonaws.com/doc/2006-03-01/"
+	
+	// Error codes
+	errCodeNoSuchBucket        = "NoSuchBucket"
+	errCodeNoSuchKey           = "NoSuchKey"
+	errCodeBucketNotEmpty      = "BucketNotEmpty"
+	errCodeBucketAlreadyExists = "BucketAlreadyOwnedByYou"
+	errCodeInvalidBucketName   = "InvalidBucketName"
+	errCodeInternalError       = "InternalError"
+	errCodeMethodNotAllowed    = "MethodNotAllowed"
+	errCodeNotImplemented      = "NotImplemented"
+	errCodeInvalidRange        = "InvalidRange"
+	errCodeInvalidArgument     = "InvalidArgument"
+	errCodeNoSuchUpload        = "NoSuchUpload"
+	errCodeInvalidPart         = "InvalidPart"
+	errCodeMalformedXML        = "MalformedXML"
+	errCodeRangeNotSatisfiable = "RequestedRangeNotSatisfiable"
+	
+	// Query parameters
+	queryListType          = "list-type"
+	queryPrefix            = "prefix"
+	queryContinuationToken = "continuation-token"
+	queryStartAfter        = "start-after"
+	queryMaxKeys           = "max-keys"
+	queryUploadID          = "uploadId"
+	queryPartNumber        = "partNumber"
+	queryUploads           = "uploads"
 )
 
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
@@ -159,19 +191,9 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 			_, _ = io.CopyN(w, rs, remain)
 			return
 		}
-		// Fallback: read all and slice (inefficient, test-only)
-		b, _ := io.ReadAll(rc)
-		if int64(len(b)) != total {
-			w.Header().Set("Content-Range", "bytes */"+itoa64(total))
-			writeError(w, http.StatusRequestedRangeNotSatisfiable, "InvalidRange", "The requested range cannot be satisfied.", r.URL.Path, "")
-			return
-		}
-		w.Header().Set("ETag", quoteETag(etag))
-		w.Header().Set("Last-Modified", lastMod.Format(http.TimeFormat))
-		w.Header().Set("Content-Range", "bytes "+itoa64(start)+"-"+itoa64(end)+"/"+itoa64(total))
-		w.Header().Set("Content-Length", itoa64(end-start+1))
-		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write(b[start : end+1])
+		// Range requests require seekable storage - return error if not supported
+		writeError(w, http.StatusNotImplemented, "NotImplemented", "Range requests are not supported for this storage backend.", r.URL.Path, "")
+		return
 	case http.MethodHead:
 		size, etag, lastMod, err := s.objs.Head(r.Context(), bucket, key)
 		if err != nil {
@@ -232,7 +254,7 @@ func (s *Server) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	bs, _ := s.store.ListBuckets(ctx)
 	res := listBucketsResult{
-		Xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+		Xmlns: s3Xmlns,
 		Owner: owner{ID: "anonymous", DisplayName: "anonymous"},
 	}
 	for _, b := range bs {
@@ -268,23 +290,29 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, name
 	ctx := r.Context()
 	ok, _ := s.store.BucketExists(ctx, name)
 	if !ok {
-		writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+name, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+name, "")
 		return
 	}
 	empty, err := s.objs.IsBucketEmpty(ctx, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", "/"+name, "")
+		slog.Error("failed to check if bucket is empty", "bucket", name, "error", err)
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", "/"+name, "")
 		return
 	}
 	if !empty {
-		writeError(w, http.StatusConflict, "BucketNotEmpty", "The bucket you tried to delete is not empty.", "/"+name, "")
+		writeError(w, http.StatusConflict, errCodeBucketNotEmpty, "The bucket you tried to delete is not empty.", "/"+name, "")
 		return
 	}
 	if err := s.objs.RemoveBucket(ctx, name); err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", "/"+name, "")
+		slog.Error("failed to remove bucket from object store", "bucket", name, "error", err)
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", "/"+name, "")
 		return
 	}
-	_ = s.store.DeleteBucket(ctx, name)
+	// Delete bucket from metadata store - log error but don't fail the request
+	// since the physical bucket is already removed
+	if err := s.store.DeleteBucket(ctx, name); err != nil {
+		slog.Error("failed to delete bucket from metadata store (bucket already removed from storage)", "bucket", name, "error", err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -408,7 +436,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	}
 
 	result := listObjectsV2Result{
-		Xmlns:         "http://s3.amazonaws.com/doc/2006-03-01/",
+		Xmlns:         s3Xmlns,
 		Name:          bucket,
 		Prefix:        prefix,
 		MaxKeys:       maxKeys,
@@ -464,7 +492,7 @@ func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Re
 	}
 	
 	result := initiateMultipartUploadResult{
-		Xmlns:    "http://s3.amazonaws.com/doc/2006-03-01/",
+		Xmlns:    s3Xmlns,
 		Bucket:   bucket,
 		Key:      key,
 		UploadID: uploadID,
@@ -561,23 +589,37 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 		}
 	}
 	
-	// Combine parts into final object (simplified: concatenate)
-	// In production, this would stream parts in order
-	var combinedData []byte
+	// Combine parts into final object using streaming to avoid loading all parts into memory
+	var partReaders []io.Reader
+	var partClosers []io.ReadCloser
+	
 	for i := 1; i <= len(upload.Parts); i++ {
 		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
 		rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
 		if err != nil {
+			// Close any already opened readers
+			for _, closer := range partClosers {
+				closer.Close()
+			}
 			writeError(w, http.StatusInternalServerError, "InternalError", "Failed to retrieve part data.", r.URL.Path, "")
 			return
 		}
-		data, _ := io.ReadAll(rc)
-		rc.Close()
-		combinedData = append(combinedData, data...)
+		partReaders = append(partReaders, rc)
+		partClosers = append(partClosers, rc)
 	}
 	
-	// Write the final object
-	etag, _, err := s.objs.Put(ctx, bucket, key, strings.NewReader(string(combinedData)))
+	// Ensure all part readers are closed after use
+	defer func() {
+		for _, closer := range partClosers {
+			closer.Close()
+		}
+	}()
+	
+	// Create a multi-reader that streams from all parts in sequence
+	combinedReader := io.MultiReader(partReaders...)
+	
+	// Write the final object by streaming from the combined reader
+	etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to create final object.", r.URL.Path, "")
 		return
@@ -597,7 +639,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	}
 	
 	result := completeMultipartUploadResult{
-		Xmlns:    "http://s3.amazonaws.com/doc/2006-03-01/",
+		Xmlns:    s3Xmlns,
 		Location: "/" + bucket + "/" + key,
 		Bucket:   bucket,
 		Key:      key,

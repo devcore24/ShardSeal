@@ -34,6 +34,12 @@ type Part struct {
 }
 
 // Store defines the metadata operations needed by the S3 API for buckets.
+//
+// Concurrency Safety: All implementations of Store MUST be safe for concurrent use
+// by multiple goroutines. Operations like CreateBucket must be atomic to handle
+// race conditions where multiple requests attempt to create the same bucket simultaneously.
+// The check-then-act pattern (e.g., BucketExists followed by CreateBucket) relies on
+// the atomicity of CreateBucket to prevent duplicate bucket creation.
 type Store interface {
 	ListBuckets(ctx context.Context) ([]Bucket, error)
 	CreateBucket(ctx context.Context, name string) error

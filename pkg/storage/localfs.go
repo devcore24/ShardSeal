@@ -152,9 +152,13 @@ func (l *LocalFS) IsBucketEmpty(ctx context.Context, bucket string) (bool, error
 		if errors.Is(err, os.ErrNotExist) { return true, nil }
 		return false, err
 	}
-	// Check recursively for any files
+	// Check recursively for any files, excluding .multipart directory (internal temp files)
 	var stack []string
-	for _, e := range entries { stack = append(stack, filepath.Join(bdir, e.Name())) }
+	for _, e := range entries {
+		// Skip .multipart directory - it contains internal temporary files
+		if e.Name() == ".multipart" { continue }
+		stack = append(stack, filepath.Join(bdir, e.Name()))
+	}
 	for len(stack) > 0 {
 		n := len(stack)-1
 		p := stack[n]

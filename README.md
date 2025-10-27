@@ -8,13 +8,14 @@
 - Implemented
   - S3 basics: ListBuckets (/), CreateBucket (PUT /{bucket}), DeleteBucket (DELETE /{bucket})
   - Objects: Put (PUT /{bucket}/{key}), Get (GET), Head (HEAD), Delete (DELETE)
-  - Range GET support (single range)
+  - Range GET support (single range, requires seekable storage)
+  - ListObjectsV2 (bucket object listing with prefix, pagination)
+  - Multipart uploads (initiate/upload-part/complete/abort)
   - Config (YAML + env), structured logging, CI
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
-  - Unit tests for buckets/objects
+  - Unit tests for buckets/objects/multipart
+  - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - ListObjectsV2 (bucket object listing)
-  - Multipart uploads
   - AWS Signature V4 authentication
   - Metrics/Tracing, BeeXL v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
@@ -56,10 +57,16 @@ curl -v -H 'Range: bytes=0-9' http://localhost:8080/my-bucket/hello.txt
 # Head object
 curl -I http://localhost:8080/my-bucket/hello.txt
 
+# List objects in bucket
+curl -s "http://localhost:8080/my-bucket?list-type=2"
+
+# List with prefix filter
+curl -s "http://localhost:8080/my-bucket?list-type=2&prefix=folder/"
+
 # Delete object
 curl -X DELETE http://localhost:8080/my-bucket/hello.txt
 
-# Delete bucket (must be empty)
+# Delete bucket (must be empty - excludes internal .multipart files)
 curl -X DELETE http://localhost:8080/my-bucket
 ```
 
@@ -85,17 +92,23 @@ Environment overrides:
 </pre>
 
 ## Notes & limitations (current MVP)
-- No authentication yet
+- No authentication yet (SigV4 pending)
 - ETag is MD5 of full object for single-part PUTs
 - Objects stored under ./data/objects/{bucket}/{key}
-- No listing of objects in a bucket yet (ListObjectsV2 pending)
+- Multipart temporary files stored in .multipart/ subdirectory (excluded from bucket empty checks)
+- Range requests require seekable storage (LocalFS supports this)
+
+## Recent Improvements (2025-10-27)
+- Fixed critical memory exhaustion bugs in multipart completion and range GET fallback
+- Improved error handling and logging for better debugging
+- Added comprehensive interface documentation for concurrency safety
+- Fixed bucket deletion to properly handle internal temporary files
 
 ## Roadmap (short)
-1) ListObjectsV2 (prefix, delimiter, pagination)
-2) Multipart Upload (initiate/upload-part/complete/abort)
-3) AWS SigV4 authentication
-4) Prometheus metrics and basic traces
-5) BeeXL v1 storage format + erasure coding scaffold
+1) AWS SigV4 authentication
+2) Prometheus metrics and basic traces
+3) BeeXL v1 storage format + erasure coding scaffold
+4) Background scrubber and self-healing
 
 ## License
 Apache-2.0
