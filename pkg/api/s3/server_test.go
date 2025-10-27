@@ -254,6 +254,95 @@ func TestListObjectsV2_Empty(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>false</IsTruncated>")) { t.Fatalf("expected IsTruncated false: %s", body) }
 }
 
+func TestMultipartUpload_Complete(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// 1. Initiate multipart upload
+	r := httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploads", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("initiate expected 200, got %d", w.Code) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<UploadId>")) { t.Fatalf("expected UploadId in response") }
+	
+	// Extract uploadId from response
+	body := w.Body.String()
+	start := bytes.Index(w.Body.Bytes(), []byte("<UploadId>")) + len("<UploadId>")
+	end := bytes.Index(w.Body.Bytes(), []byte("</UploadId>"))
+	uploadID := body[start:end]
+	
+	// 2. Upload part 1
+	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString("part1data"))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("upload part 1 expected 200, got %d", w.Code) }
+	etag1 := strings.Trim(w.Header().Get("ETag"), "\"")
+	
+	// 3. Upload part 2
+	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=2", bytes.NewBufferString("part2data"))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("upload part 2 expected 200, got %d", w.Code) }
+	etag2 := strings.Trim(w.Header().Get("ETag"), "\"")
+	
+	// 4. Complete multipart upload
+	completeXML := `<CompleteMultipartUpload>
+		<Part><PartNumber>1</PartNumber><ETag>"` + etag1 + `"</ETag></Part>
+		<Part><PartNumber>2</PartNumber><ETag>"` + etag2 + `"</ETag></Part>
+	</CompleteMultipartUpload>`
+	r = httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploadId="+uploadID, bytes.NewBufferString(completeXML))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("complete expected 200, got %d: %s", w.Code, w.Body.String()) }
+	
+	// 5. Verify final object exists
+	r = httptest.NewRequest(http.MethodGet, "/bkt/large.bin", nil)
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("get final object expected 200, got %d", w.Code) }
+	if got := w.Body.String(); got != "part1datapart2data" { t.Fatalf("unexpected final data: %q", got) }
+}
+
+func TestMultipartUpload_Abort(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// Initiate multipart upload
+	r := httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploads", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("initiate expected 200, got %d", w.Code) }
+	
+	body := w.Body.String()
+	start := bytes.Index(w.Body.Bytes(), []byte("<UploadId>")) + len("<UploadId>")
+	end := bytes.Index(w.Body.Bytes(), []byte("</UploadId>"))
+	uploadID := body[start:end]
+	
+	// Upload a part
+	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString("testdata"))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 200 { t.Fatalf("upload part expected 200, got %d", w.Code) }
+	
+	// Abort the upload
+	r = httptest.NewRequest(http.MethodDelete, "/bkt/large.bin?uploadId="+uploadID, nil)
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 204 { t.Fatalf("abort expected 204, got %d", w.Code) }
+	
+	// Verify object was not created
+	r = httptest.NewRequest(http.MethodGet, "/bkt/large.bin", nil)
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != 404 { t.Fatalf("get after abort expected 404, got %d", w.Code) }
+}
+
 // helpers
 
 func md5hex(b []byte) string {

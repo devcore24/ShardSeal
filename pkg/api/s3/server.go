@@ -87,6 +87,28 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	q := r.URL.Query()
+	
+	// Check for multipart upload operations
+	if uploadID := q.Get("uploadId"); uploadID != "" {
+		if r.Method == http.MethodPost {
+			s.handleCompleteMultipartUpload(w, r, bucket, key, uploadID)
+			return
+		} else if r.Method == http.MethodDelete {
+			s.handleAbortMultipartUpload(w, r, uploadID)
+			return
+		} else if r.Method == http.MethodPut && q.Get("partNumber") != "" {
+			s.handleUploadPart(w, r, bucket, key, uploadID)
+			return
+		}
+	}
+	
+	// Check for multipart upload initiation
+	if _, hasUploads := q["uploads"]; hasUploads && r.Method == http.MethodPost {
+		s.handleInitiateMultipartUpload(w, r, bucket, key)
+		return
+	}
+	
 	switch r.Method {
 	case http.MethodPut:
 		// Put object
@@ -415,4 +437,200 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
 	_ = xml.NewEncoder(w).Encode(result)
+}
+
+// Multipart upload handlers
+
+type initiateMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+	Xmlns    string   `xml:"xmlns,attr"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	UploadID string   `xml:"UploadId"`
+}
+
+func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	ctx := r.Context()
+	ok, _ := s.store.BucketExists(ctx, bucket)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket, "")
+		return
+	}
+	
+	uploadID, err := s.store.InitiateMultipartUpload(ctx, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+	
+	result := initiateMultipartUploadResult{
+		Xmlns:    "http://s3.amazonaws.com/doc/2006-03-01/",
+		Bucket:   bucket,
+		Key:      key,
+		UploadID: uploadID,
+	}
+	
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_ = xml.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string) {
+	ctx := r.Context()
+	partNumStr := r.URL.Query().Get("partNumber")
+	partNum, err := strconv.Atoi(partNumStr)
+	if err != nil || partNum < 1 || partNum > 10000 {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", "Part number must be an integer between 1 and 10000.", r.URL.Path, "")
+		return
+	}
+	
+	// Verify upload exists
+	_, err = s.store.GetMultipartUpload(ctx, uploadID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		return
+	}
+	
+	// Upload the part (for now, store it as a temporary object)
+	partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(partNum)
+	etag, size, err := s.objs.Put(ctx, bucket, partKey, r.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+	
+	// Record the part in metadata
+	err = s.store.PutPart(ctx, uploadID, partNum, etag, size)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+	
+	w.Header().Set("ETag", quoteETag(etag))
+	w.WriteHeader(http.StatusOK)
+}
+
+type completeMultipartUpload struct {
+	XMLName xml.Name               `xml:"CompleteMultipartUpload"`
+	Parts   []completedPartRequest `xml:"Part"`
+}
+
+type completedPartRequest struct {
+	PartNumber int    `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+}
+
+type completeMultipartUploadResult struct {
+	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+	Xmlns    string   `xml:"xmlns,attr"`
+	Location string   `xml:"Location"`
+	Bucket   string   `xml:"Bucket"`
+	Key      string   `xml:"Key"`
+	ETag     string   `xml:"ETag"`
+}
+
+func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string) {
+	ctx := r.Context()
+	
+	// Parse the complete request body
+	var req completeMultipartUpload
+	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "MalformedXML", "The XML you provided was not well-formed.", r.URL.Path, "")
+		return
+	}
+	
+	// Get the upload metadata
+	upload, err := s.store.GetMultipartUpload(ctx, uploadID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		return
+	}
+	
+	// Verify all parts are present and match
+	for _, reqPart := range req.Parts {
+		part, ok := upload.Parts[reqPart.PartNumber]
+		if !ok {
+			writeError(w, http.StatusBadRequest, "InvalidPart", "One or more of the specified parts could not be found.", r.URL.Path, "")
+			return
+		}
+		// ETags in request may be quoted, so compare without quotes
+		reqETag := strings.Trim(reqPart.ETag, "\"")
+		if part.ETag != reqETag {
+			writeError(w, http.StatusBadRequest, "InvalidPart", "One or more of the specified parts has an incorrect ETag.", r.URL.Path, "")
+			return
+		}
+	}
+	
+	// Combine parts into final object (simplified: concatenate)
+	// In production, this would stream parts in order
+	var combinedData []byte
+	for i := 1; i <= len(upload.Parts); i++ {
+		partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(i)
+		rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "InternalError", "Failed to retrieve part data.", r.URL.Path, "")
+			return
+		}
+		data, _ := io.ReadAll(rc)
+		rc.Close()
+		combinedData = append(combinedData, data...)
+	}
+	
+	// Write the final object
+	etag, _, err := s.objs.Put(ctx, bucket, key, strings.NewReader(string(combinedData)))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to create final object.", r.URL.Path, "")
+		return
+	}
+	
+	// Clean up parts
+	for i := 1; i <= len(upload.Parts); i++ {
+		partKey := bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(i)
+		_ = s.objs.Delete(ctx, bucket, partKey)
+	}
+	
+	// Complete the upload in metadata
+	_, err = s.store.CompleteMultipartUpload(ctx, uploadID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+	
+	result := completeMultipartUploadResult{
+		Xmlns:    "http://s3.amazonaws.com/doc/2006-03-01/",
+		Location: "/" + bucket + "/" + key,
+		Bucket:   bucket,
+		Key:      key,
+		ETag:     quoteETag(etag),
+	}
+	
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_ = xml.NewEncoder(w).Encode(result)
+}
+
+func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Request, uploadID string) {
+	ctx := r.Context()
+	
+	// Get upload metadata to clean up parts
+	upload, err := s.store.GetMultipartUpload(ctx, uploadID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		return
+	}
+	
+	// Delete all parts
+	for partNum := range upload.Parts {
+		partKey := upload.Bucket + "/.multipart/" + uploadID + "/part." + strconv.Itoa(partNum)
+		_ = s.objs.Delete(ctx, upload.Bucket, partKey)
+	}
+	
+	// Abort in metadata
+	err = s.store.AbortMultipartUpload(ctx, uploadID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		return
+	}
+	
+	w.WriteHeader(http.StatusNoContent)
 }
