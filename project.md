@@ -338,3 +338,63 @@ s3bee/
 ├── configs/            # Sample configurations
 └── data/               # Default data directory (local dev)
 ```
+
+
+
+
+
+info about latest changes:
+Perfect! Let me create a final summary:
+
+   Summary
+
+   Successfully implemented complete multipart upload support for s3bee! Here's what was accomplished:
+
+   Changes Made:
+
+   1. Metadata Store (pkg/metadata/store.go):
+     •  Added MultipartUpload and Part data structures
+     •  Extended Store interface with 5 new methods:
+       •  InitiateMultipartUpload - Creates new upload with unique ID
+       •  GetMultipartUpload - Retrieves upload metadata
+       •  PutPart - Records uploaded part
+       •  CompleteMultipartUpload - Finalizes upload
+       •  AbortMultipartUpload - Cancels upload
+     •  Implemented all methods in MemoryStore with thread-safe operations
+
+   2. S3 API Server (pkg/api/s3/server.go):
+     •  Added routing logic to detect multipart operations via query parameters
+     •  Implemented 4 handler functions:
+       •  handleInitiateMultipartUpload - Returns XML with uploadId
+       •  handleUploadPart - Stores part as temporary object, validates part numbers (1-10000)
+       •  handleCompleteMultipartUpload - Validates parts, concatenates data, creates final object
+       •  handleAbortMultipartUpload - Cleans up parts and metadata
+     •  Fixed query parameter handling for valueless params like ?uploads
+
+   3. Comprehensive Tests (pkg/api/s3/server_test.go):
+     •  TestMultipartUpload_Complete - Full workflow with 2 parts
+     •  TestMultipartUpload_Abort - Abort scenario with cleanup verification
+     •  Both tests verify correct HTTP status codes and final object state
+
+   All Tests Passing ✅
+   •  9 test cases pass (7 existing + 2 new multipart tests)
+   •  Build succeeds without errors
+   •  Changes committed to git
+
+   What Works Now:
+
+   bash
+     # Initiate multipart upload
+     curl -X POST "http://localhost:8080/bucket/large-file?uploads"
+
+     # Upload parts
+     curl -X PUT "http://localhost:8080/bucket/large-file?uploadId=ID&partNumber=1" --data-binary @part1
+     curl -X PUT "http://localhost:8080/bucket/large-file?uploadId=ID&partNumber=2" --data-binary @part2
+
+     # Complete upload
+     curl -X POST "http://localhost:8080/bucket/large-file?uploadId=ID" --data '<CompleteMultipartUpload>...'
+
+     # Abort upload
+     curl -X DELETE "http://localhost:8080/bucket/large-file?uploadId=ID"
+
+   The implementation follows S3 API conventions and properly handles part validation, ETag matching, and cleanup!
