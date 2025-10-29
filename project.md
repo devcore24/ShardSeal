@@ -226,6 +226,9 @@ Compaction & GC
 - Config extended with authMode and accessKeys; env overrides via S3FREE_AUTH_MODE and S3FREE_ACCESS_KEYS
 - AWS SigV4 authentication implemented (header and presigned) with unit tests
 - Prometheus metrics exposed at /metrics; HTTP request instrumentation added
+- Readiness improvements: /readyz now reflects dependency readiness (config loaded, storage initialized, metrics registered)
+- FreeXL v1 scaffolding: erasure Params/Codec interfaces with NoopCodec; manifest model and in-memory ManifestStore
+- Background scrubber scaffold: Scrubber interface and NoopScrubber with start/stop/runOnce and counters; unit tests added
 - **Critical fixes applied (2025-10-27):**
   - Fixed CompleteMultipartUpload to use streaming (prevents memory exhaustion)
   - Fixed Range GET fallback (now returns 501 instead of loading entire file)
@@ -235,11 +238,13 @@ Compaction & GC
   - Fixed bucket deletion to exclude .multipart temporary files from empty check
 
 ### Next Up 🚧
-1) Basic tracing (OpenTelemetry scaffold)
-2) FreeXL v1 storage spec and RS(k,m) codec scaffolding
-3) Background scrubber interfaces (no-op impl)
-4) Improve readiness (/readyz reflects dependency readiness)
-5) Consider moving .multipart storage to separate staging area (optional optimization)
+1) OpenTelemetry tracing scaffold (HTTP spans and exporter; off by default)
+2) Storage I/O metrics in LocalFS: bytes read/written, op latency histograms; expose via metrics registry
+3) Optional: move multipart temp parts to separate staging area outside bucket namespace; update LocalFS and tests
+4) Admin API skeleton on separate port (read-only endpoints: health/version/storage status); OIDC/RBAC wiring stubbed and disabled by default
+5) End-to-end SigV4 tests in S3 API package for header-signed and presigned URL flows using static keys
+6) Monitoring assets: example Grafana dashboards and Alertmanager rules; docs and sample configs
+7) Makefile convenience targets: run-local, run-sigv4, test-verbose
 
 ## Development Guide
 
@@ -425,3 +430,103 @@ You do not have any "huge mistakes" that require a complete rewrite. The foundat
 4.  **Ensure your backend implementations are concurrent-safe**, especially for "check-then-act" operations.
 
 This is a fantastic start to a complex project. Keep up the great work
+## Future Work: Admin Control Plane, UI, and Monitoring
+
+This section captures planned control-plane capabilities (admin API/UI/CLI) and a practical monitoring strategy for production operations.
+
+- Admin Control Plane and UI
+  - Separate Admin API (control plane) from S3 data plane to avoid privilege bleed and to keep admin flows isolated.
+  - Expose a secure Admin UI (SPA) and CLI that talk only to the Admin API; operators never use the S3 endpoints for admin tasks.
+  - Core endpoints (initial set):
+    - Cluster nodes: add/join, cordon/drain, decommission, list/describe
+    - Placement/ring: view, rebalance (throttled), progress/status
+    - Scrubber/repair: status, start/stop/pause, queue depths, last error (wire to [repair.Scrubber](pkg/repair/scrubber.go))
+    - Backups: list/create metadata snapshot, restore (with guardrails)
+    - Tenants/buckets: create/delete, quotas/policies (scoped RBAC)
+    - Configuration: get/set (transactional with validation; idempotent)
+  - Control-plane state (future): embedded Raft metadata store to be the single source of truth for cluster membership, placement configs, and admin operations. Admin API mutates state via the leader; workers (rebalance, scrub, replicate) consume work queues derived from Raft state.
+
+- Authentication and Authorization (Admin API)
+  - AuthN: OIDC/OAuth2 (e.g., Keycloak, Dex, Auth0, Okta, Zitadel) using go-oidc + oauth2 for Go.
+  - AuthZ: RBAC/ABAC with Casbin or policy-as-code with OPA (Open Policy Agent).
+  - Suggested roles:
+    - cluster-admin: all admin ops; can approve destructive/irreversible actions
+    - storage-admin: node/ring/scrub operations; no auth configuration access
+    - tenant-admin: bucket/policy operations scoped to a tenant
+    - read-only: dashboards/metrics/cluster info only
+    - auditor: read-only plus audit log access
+  - Transport:
+    - TLS for Admin API/UI; mTLS for node-to-node control-plane communications and joining workflows
+    - Separate admin listen address/port from S3 data plane
+
+- Cluster Operations (examples)
+  - Node add/join: new node authenticates via mTLS/OIDC; Admin API validates and places node into warm-up; rebalance gradually with safety checks
+  - Cordon/drain: prevent new placements and migrate shards away before maintenance
+  - Decommission: only when drained and redundancy satisfied
+  - Rebalance: ring-aware, throttled, failure-domain aware; visible progress
+  - Replication (future): asynchronous, bucket-level policies to secondary cluster or remote storage
+
+- Backups and Restore
+  - Metadata: periodic Raft snapshots with versioning and tested restore path; encryption and immutability recommended
+  - Data: replication or snapshot-and-replay approach with post-restore scrub
+  - Guardrails: require cluster-admin approval; record audit events
+
+- Admin UI/CLI
+  - UI: SPA with OIDC login; role-aware; features include nodes health, ring balance, scrub status, backup lifecycle, tenant policies
+  - CLI: same Admin API; supports GitOps workflows and automation; dry-run/diff support
+
+### Monitoring and Health
+
+- Recommended Stack
+  - Prometheus (scrape /metrics), Alertmanager (alert routing), Grafana (dashboards)
+  - Existing: /metrics endpoint and basic HTTP metrics are provided via [obs.metrics.Metrics](pkg/obs/metrics/metrics.go) and wired in [main.main](cmd/s3free/main.go)
+
+- Exporters (system level)
+  - node_exporter: host CPU, memory, IO, filesystem usage (bytes, inodes), context switches, saturation
+  - smartctl/smartmon_exporter: disk SMART attributes (reallocated sectors, temperature, pending sectors)
+  - blackbox_exporter: HTTP probes for /livez, /readyz, Admin API availability
+  - Optional: process_exporter to monitor multiple daemons if running sidecars
+
+- Application Metrics (additions to expose in-process)
+  - Data plane
+    - S3 request counters and latency histograms by method and status (already in place); consider route-level metrics carefully
+    - Storage backend: bytes read/written, op latency and errors; read-path integrity failures
+  - FreeXL storage
+    - Shards written/read/repaired; RS parameters distribution; header/footer/Merkle verification failure counts
+    - Placement/ring balance score, pending migrations, move rates
+  - Scrubber/repair
+    - Queue depths, scan/repair rates, last run, last error (align with [repair.NoopScrubber](pkg/repair/scrubber.go))
+  - Buckets/tenants
+    - Low-cardinality aggregates: per-tenant/bucket totals only if bounded; prefer top-N via recording rules to avoid label explosion
+
+- Health Endpoints and Readiness
+  - /livez: lightweight liveness; returns OK quickly
+  - /readyz: readiness gate reflecting config loaded, storage initialized, metrics registered (implemented in [main.main](cmd/s3free/main.go))
+  - Admin API health: separate probe (e.g., /admin/health) with internal dependency checks (Raft leader, queues)
+
+- Dashboards (Grafana) and Alerts (Alertmanager)
+  - Dashboards
+    - Data plane: throughput, error rate, p50/p95/p99 latencies per operation
+    - Storage systems: disk capacity and IO latencies; SMART status and temperature charts
+    - Placement/ring: balance/bucket migration views; progress bars for rebalances
+    - Scrubber and repair: debt and rate charts; time since last success; error trend
+  - Alerts (examples)
+    - SLO: sustained 5xx error rate; GET/PUT p99 latency breaches
+    - Capacity: disk usage (bytes/inodes) over thresholds; insufficient free stripes before maintenance
+    - Integrity/health: SMART critical; repeated integrity failures; scrubber persistent errors
+    - Availability: node down; blackbox probe failures for S3 and Admin endpoints
+
+- Logging and Tracing
+  - Logs: centralize with Loki or ELK; include request IDs and subject identities for admin actions
+  - Tracing: add OpenTelemetry later; correlate Admin API actions with background operations (rebalance/scrub/replicate)
+
+- Metric Cardinality Guidelines
+  - Avoid high-cardinality labels (object key, request ID, IP). Prefer bounded labels (method, code, tenant).
+  - Use recording rules for top-N and long-window aggregations; keep raw series counts manageable.
+
+- Rollout Plan in this Repository
+  - Phase A: Admin API skeleton on separate port with OIDC auth and RBAC middleware; read-only endpoints (cluster/nodes status)
+  - Phase B: Mutating admin operations with guardrails (cordon/drain, scrub start/stop, backups)
+  - Phase C: Admin UI (SPA) + CLI; role-aware pages and commands
+  - Phase D: Replication and backup end-to-end flows with audit trail
+  - Phase E: Tracing, chaos tests for rebalance/drain; alerting rules and runbooks

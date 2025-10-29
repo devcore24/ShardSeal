@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -39,10 +40,11 @@ import (
 //
 // See also: docs/ for operational guidance.
 type Config struct {
-	Address   string   `yaml:"address"`
-	DataDirs  []string `yaml:"dataDirs"`
-	AuthMode  string   `yaml:"authMode"`  // "none" or "sigv4"
+	Address    string            `yaml:"address"`
+	DataDirs   []string          `yaml:"dataDirs"`
+	AuthMode   string            `yaml:"authMode"`            // "none" or "sigv4"
 	AccessKeys []StaticAccessKey `yaml:"accessKeys"`
+	Tracing    TracingConfig     `yaml:"tracing"`
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -52,12 +54,27 @@ type StaticAccessKey struct {
 	User      string `yaml:"user,omitempty"`
 }
 
+// TracingConfig controls OpenTelemetry tracing.
+type TracingConfig struct {
+	Enabled     bool    `yaml:"enabled"`
+	Endpoint    string  `yaml:"endpoint"`               // OTLP collector endpoint (host:port or URL)
+	Protocol    string  `yaml:"protocol,omitempty"`     // "grpc" (default) or "http"
+	SampleRatio float64 `yaml:"sampleRatio,omitempty"`  // 0.0 - 1.0
+	ServiceName string  `yaml:"serviceName,omitempty"`  // override service.name; default "s3free"
+}
+
 // Default returns a Config with safe, local defaults.
 func Default() Config {
 	return Config{
 		Address:  ":8080",
 		DataDirs: []string{"./data"},
 		AuthMode: "none",
+		Tracing: TracingConfig{
+			Enabled:     false,
+			Protocol:    "grpc",
+			SampleRatio: 0.0,
+			ServiceName: "s3free",
+		},
 	}
 }
 
@@ -131,6 +148,38 @@ func applyEnvOverrides(cfg Config) Config {
 			// override existing list with env-provided keys
 			cfg.AccessKeys = keys
 		}
+	}
+	// Tracing overrides
+	if v := os.Getenv("S3FREE_TRACING_ENABLED"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.Tracing.Enabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.Tracing.Enabled = false
+		}
+	}
+	if v := os.Getenv("S3FREE_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("S3FREE_TRACING_PROTOCOL"); v != "" {
+		p := strings.ToLower(strings.TrimSpace(v))
+		if p == "grpc" || p == "http" {
+			cfg.Tracing.Protocol = p
+		}
+	}
+	if v := os.Getenv("S3FREE_TRACING_SAMPLE"); v != "" {
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			if f < 0 {
+				f = 0
+			}
+			if f > 1 {
+				f = 1
+			}
+			cfg.Tracing.SampleRatio = f
+		}
+	}
+	if v := os.Getenv("S3FREE_TRACING_SERVICE"); v != "" {
+		cfg.Tracing.ServiceName = strings.TrimSpace(v)
 	}
 	return cfg
 }

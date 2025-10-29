@@ -14,12 +14,13 @@ import (
 	"time"
 )
 
-// LocalFS implements ObjectStore on a single local directory. Suitable for dev/MVP.
+ // LocalFS implements ObjectStore on a single local directory. Suitable for dev/MVP.
 type LocalFS struct {
 	base string // absolute base directory
+	obs  storageObserver
 }
 
-// NewLocalFS creates a LocalFS rooted at the first non-empty dir from dirs.
+ // NewLocalFS creates a LocalFS rooted at the first non-empty dir from dirs.
 func NewLocalFS(dirs []string) (*LocalFS, error) {
 	var base string
 	for _, d := range dirs {
@@ -33,68 +34,95 @@ func NewLocalFS(dirs []string) (*LocalFS, error) {
 	return &LocalFS{base: abs}, nil
 }
 
+// storageObserver is a minimal observer used to record metrics without importing dependencies.
+type storageObserver interface {
+	Observe(op string, bytes int64, err error, dur time.Duration)
+}
+
+// SetObserver registers a metrics observer for storage operations.
+func (l *LocalFS) SetObserver(o storageObserver) {
+	l.obs = o
+}
+
+// observe emits a single observation if an observer is registered.
+func (l *LocalFS) observe(op string, bytes int64, err error, start time.Time) {
+	if l != nil && l.obs != nil {
+		l.obs.Observe(op, bytes, err, time.Since(start))
+	}
+}
+
 func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (string, int64, error) {
+	start := time.Now()
 	path, err := l.objectPath(bucket, key)
-	if err != nil { return "", 0, err }
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { return "", 0, err }
+	if err != nil { l.observe("put", 0, err, start); return "", 0, err }
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { l.observe("put", 0, err, start); return "", 0, err }
 	f, err := os.Create(path)
-	if err != nil { return "", 0, err }
+	if err != nil { l.observe("put", 0, err, start); return "", 0, err }
 	defer f.Close()
 	// compute MD5 while writing
 	h := md5.New()
 	n, err := io.Copy(io.MultiWriter(f, h), r)
-	if err != nil { return "", n, err }
+	if err != nil { l.observe("put", n, err, start); return "", n, err }
 	etag := hex.EncodeToString(h.Sum(nil))
 	// fs timestamp is last-modified
 	_ = os.Chtimes(path, time.Now(), time.Now())
+	l.observe("put", n, nil, start)
 	return etag, n, nil
 }
 
 func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, int64, string, time.Time, error) {
+	start := time.Now()
 	path, err := l.objectPath(bucket, key)
-	if err != nil { return nil, 0, "", time.Time{}, err }
+	if err != nil { l.observe("get", 0, err, start); return nil, 0, "", time.Time{}, err }
 	st, err := os.Stat(path)
-	if err != nil { return nil, 0, "", time.Time{}, err }
+	if err != nil { l.observe("get", 0, err, start); return nil, 0, "", time.Time{}, err }
 	f, err := os.Open(path)
-	if err != nil { return nil, 0, "", time.Time{}, err }
+	if err != nil { l.observe("get", 0, err, start); return nil, 0, "", time.Time{}, err }
 	etag, err := md5File(path)
-	if err != nil { f.Close(); return nil, 0, "", time.Time{}, err }
+	if err != nil { f.Close(); l.observe("get", 0, err, start); return nil, 0, "", time.Time{}, err }
+	l.observe("get", st.Size(), nil, start)
 	return f, st.Size(), etag, st.ModTime().UTC(), nil
 }
 
 func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, time.Time, error) {
+	start := time.Now()
 	path, err := l.objectPath(bucket, key)
-	if err != nil { return 0, "", time.Time{}, err }
+	if err != nil { l.observe("head", 0, err, start); return 0, "", time.Time{}, err }
 	st, err := os.Stat(path)
-	if err != nil { return 0, "", time.Time{}, err }
+	if err != nil { l.observe("head", 0, err, start); return 0, "", time.Time{}, err }
 	etag, err := md5File(path)
-	if err != nil { return 0, "", time.Time{}, err }
+	if err != nil { l.observe("head", 0, err, start); return 0, "", time.Time{}, err }
+	l.observe("head", 0, nil, start)
 	return st.Size(), etag, st.ModTime().UTC(), nil
 }
 
 func (l *LocalFS) Delete(ctx context.Context, bucket, key string) error {
+	start := time.Now()
 	path, err := l.objectPath(bucket, key)
-	if err != nil { return err }
+	if err != nil { l.observe("delete", 0, err, start); return err }
 	if err := os.Remove(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) { return os.ErrNotExist }
+		if errors.Is(err, os.ErrNotExist) { l.observe("delete", 0, os.ErrNotExist, start); return os.ErrNotExist }
+		l.observe("delete", 0, err, start)
 		return err
 	}
 	// best-effort: remove empty parent dirs
 	_ = removeEmptyParents(filepath.Dir(path), filepath.Join(l.base, "objects", bucket))
+	l.observe("delete", 0, nil, start)
 	return nil
 }
 
 func (l *LocalFS) List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]ObjectMeta, bool, error) {
+	start := time.Now()
 	bdir := filepath.Join(l.base, "objects", bucket)
 	var objects []ObjectMeta
-	
+ 	
 	err := filepath.WalkDir(bdir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) { return nil }
 			return err
 		}
 		if d.IsDir() { return nil }
-		
+ 		
 		// Extract relative key from path
 		rel, err := filepath.Rel(bdir, path)
 		if err != nil { return err }
@@ -102,57 +130,62 @@ func (l *LocalFS) List(ctx context.Context, bucket, prefix, startAfter string, m
 
 		// Skip internal multipart temp files (never list these)
 		if strings.HasPrefix(key, ".multipart/") { return nil }
-		
+ 		
 		// Apply prefix filter
 		if prefix != "" && !strings.HasPrefix(key, prefix) { return nil }
-		
+ 		
 		// Apply startAfter filter
 		if startAfter != "" && key <= startAfter { return nil }
-		
+ 		
 		// Get file info
 		info, err := d.Info()
 		if err != nil { return err }
-		
+ 		
 		// Compute ETag
 		etag, err := md5File(path)
 		if err != nil { return err }
-		
+ 		
 		objects = append(objects, ObjectMeta{
 			Key:          key,
 			Size:         info.Size(),
 			ETag:         etag,
 			LastModified: info.ModTime().UTC(),
 		})
-		
+ 		
 		return nil
 	})
-	
+ 	
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			l.observe("list", 0, nil, start)
 			return []ObjectMeta{}, false, nil
 		}
+		l.observe("list", 0, err, start)
 		return nil, false, err
 	}
-	
+ 	
 	// Sort by key for stable results
 	sort.Slice(objects, func(i, j int) bool {
 		return objects[i].Key < objects[j].Key
 	})
-	
+ 	
 	// Apply maxKeys limit and determine if truncated
 	isTruncated := len(objects) > maxKeys
 	if isTruncated {
 		objects = objects[:maxKeys]
 	}
-	
+ 	
+	l.observe("list", 0, nil, start)
 	return objects, isTruncated, nil
 }
 
 func (l *LocalFS) IsBucketEmpty(ctx context.Context, bucket string) (bool, error) {
+	start := time.Now()
 	bdir := filepath.Join(l.base, "objects", bucket)
 	entries, err := os.ReadDir(bdir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) { return true, nil }
+		if errors.Is(err, os.ErrNotExist) { l.observe("is_bucket_empty", 0, nil, start); return true, nil }
+		l.observe("is_bucket_empty", 0, err, start)
 		return false, err
 	}
 	// Check recursively for any files, excluding .multipart directory (internal temp files)
@@ -167,16 +200,18 @@ func (l *LocalFS) IsBucketEmpty(ctx context.Context, bucket string) (bool, error
 		p := stack[n]
 		stack = stack[:n]
 		fi, err := os.Stat(p)
-		if err != nil { return false, err }
+		if err != nil { l.observe("is_bucket_empty", 0, err, start); return false, err }
 		if fi.Mode().IsRegular() {
+			l.observe("is_bucket_empty", 0, nil, start)
 			return false, nil
 		}
 		if fi.IsDir() {
 			kids, err := os.ReadDir(p)
-			if err != nil { return false, err }
+			if err != nil { l.observe("is_bucket_empty", 0, err, start); return false, err }
 			for _, k := range kids { stack = append(stack, filepath.Join(p, k.Name())) }
 		}
 	}
+	l.observe("is_bucket_empty", 0, nil, start)
 	return true, nil
 }
 

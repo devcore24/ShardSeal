@@ -16,3 +16,22 @@ authMode: "none"  # "none" or "sigv4"
 #   - accessKey: "AKIAEXAMPLE"
 #     secretKey: "secret"
 #     user: "local"
+
+# Tracing (optional)
+# OpenTelemetry tracing is disabled by default. To enable, set enabled: true and configure endpoint/protocol.
+# You can also override via env:
+#   S3FREE_TRACING_ENABLED=true
+#   S3FREE_TRACING_ENDPOINT=localhost:4317   # for gRPC (default)
+#   S3FREE_TRACING_PROTOCOL=grpc             # or "http"
+#   S3FREE_TRACING_SAMPLE=0.1                # 10% sampling
+#   S3FREE_TRACING_SERVICE=s3free-local
+tracing:
+  enabled: false
+  # For gRPC, typical endpoint is "localhost:4317"; for HTTP "localhost:4318"
+  endpoint: ""
+  # "grpc" (default) or "http"
+  protocol: "grpc"
+  # 0.0 - 1.0 sampling ratio. Use 1.0 for debugging only.
+  sampleRatio: 0.0
+  # Optional override for service.name resource attribute
+  serviceName: "s3free"

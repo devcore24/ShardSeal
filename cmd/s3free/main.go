@@ -14,6 +14,7 @@ import (
 	"s3free/pkg/config"
 	"s3free/pkg/metadata"
 	"s3free/pkg/obs/metrics"
+	"s3free/pkg/obs/tracing"
 	"s3free/pkg/security/sigv4"
 	"s3free/pkg/storage"
 )
@@ -35,6 +36,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize tracing (OpenTelemetry)
+	traceShutdown, terr := tracing.Init(context.Background(), tracing.Options{
+		Enabled:     cfg.Tracing.Enabled,
+		Endpoint:    cfg.Tracing.Endpoint,
+		Protocol:    cfg.Tracing.Protocol,
+		SampleRatio: cfg.Tracing.SampleRatio,
+		ServiceName: cfg.Tracing.ServiceName,
+	})
+	if terr != nil {
+		slog.Warn("tracing init failed", slog.String("error", terr.Error()))
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +62,8 @@ func main() {
 	// Metrics: Prometheus /metrics endpoint and HTTP instrumentation
 	m := metrics.New()
 	mux.Handle("/metrics", m.Handler())
+	// Register storage-level metrics on shared registry
+	sm := metrics.NewStorageMetrics(m.Registry())
 
 	// Mount S3 API at root, optionally behind SigV4 middleware
 	store := metadata.NewMemoryStore()
@@ -57,6 +72,9 @@ func main() {
 		slog.Error("init storage", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+	// Wire storage metrics observer
+	objs.SetObserver(sm)
+
 	api := s3.New(store, objs)
 
 	handler := api.Handler()
@@ -79,6 +97,8 @@ func main() {
 		handler = sigv4.Middleware(credStore, exempt)(handler)
 		slog.Info("sigv4 auth enabled")
 	}
+	// Tracing middleware
+	handler = tracing.Middleware(handler)
 	// Instrument S3 API with HTTP metrics
 	handler = m.Middleware(handler)
 	mux.Handle("/", handler)
@@ -109,6 +129,10 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", slog.String("error", err.Error()))
+	}
+	// Shutdown tracing provider
+	if err := traceShutdown(ctx); err != nil {
+		slog.Error("tracing shutdown error", slog.String("error", err.Error()))
 	}
 	slog.Info("s3free stopped")
 }

@@ -13,6 +13,7 @@
   - Multipart uploads (initiate/upload-part/complete/abort)
   - Config (YAML + env), structured logging, CI
   - Prometheus metrics (/metrics) and HTTP instrumentation
+  - Authentication: AWS Signature V4 (optional; header and presigned URL)
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
@@ -89,6 +90,11 @@ go test ./pkg/api/s3 -v
 curl -s http://localhost:8080/metrics | head -n 20
 ```
 
+## Health endpoints
+- /livez: liveness probe (always OK when process is running)
+- /readyz: readiness probe gated on initialization completion
+- /metrics: Prometheus metrics endpoint
+
 ## Configuration
 Example at configs/local.yaml:
 ```yaml
@@ -112,6 +118,16 @@ Environment overrides:
 - S3FREE_ACCESS_KEYS  // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
 </pre>
 
+## Authentication (optional SigV4)
+- Disabled by default. Enable verification and provide credentials either via config or environment:
+```bash
+export S3FREE_AUTH_MODE=sigv4
+export S3FREE_ACCESS_KEYS='AKIAEXAMPLE:secret:local'
+# Run server after setting env
+S3FREE_CONFIG=configs/local.yaml make run
+```
+When enabled, the server requires valid AWS Signature V4 on S3 requests (both Authorization header and presigned URLs are supported). Health endpoints (/livez, /readyz, /metrics) remain unauthenticated.
+
 ## Notes & limitations (current MVP)
 - Authentication: optional. AWS SigV4 supported (header and presigned; disabled by default via config/env).
 - ETag is MD5 of full object for single-part PUTs
@@ -119,11 +135,12 @@ Environment overrides:
 - Multipart temporary files stored in .multipart/ subdirectory (excluded from listings and bucket empty checks)
 - Range requests require seekable storage (LocalFS supports this)
 
-## Recent Improvements (2025-10-27)
-- Fixed critical memory exhaustion bugs in multipart completion and range GET fallback
-- Improved error handling and logging for better debugging
-- Added comprehensive interface documentation for concurrency safety
-- Fixed bucket deletion to properly handle internal temporary files
+## Recent Improvements (2025-10-29)
+- Implemented AWS SigV4 authentication verification (headers and presigned) with unit tests
+- Exposed Prometheus metrics at /metrics and added HTTP instrumentation middleware
+- Added liveness (/livez) and readiness (/readyz) endpoints; readiness gated after initialization
+- Fixed critical memory issues: streaming multipart completion; safe handling for non-seekable Range GET
+- Hid internal multipart files from listings and bucket-empty checks; normalized temp part layout
 
 ## Roadmap (short)
 1) Basic tracing
