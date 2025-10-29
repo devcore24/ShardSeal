@@ -13,6 +13,7 @@ import (
 	"s3free/pkg/api/s3"
 	"s3free/pkg/metadata"
 	"s3free/pkg/storage"
+	"s3free/pkg/security/sigv4"
 )
 
 var version = "0.0.1-dev"
@@ -35,12 +36,33 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ready")) })
 
-	// Mount initial S3 API (stubbed) at root
+	// Mount S3 API at root, optionally behind SigV4 middleware
 	store := metadata.NewMemoryStore()
 	objs, err := storage.NewLocalFS(cfg.DataDirs)
 	if err != nil { slog.Error("init storage", slog.String("error", err.Error())); os.Exit(1) }
 	api := s3.New(store, objs)
-	mux.Handle("/", api.Handler())
+
+	handler := api.Handler()
+	if cfg.AuthMode == "sigv4" {
+		// Build static credentials store from config
+		keys := make([]sigv4.AccessKey, 0, len(cfg.AccessKeys))
+		for _, k := range cfg.AccessKeys {
+			keys = append(keys, sigv4.AccessKey{AccessKey: k.AccessKey, SecretKey: k.SecretKey, User: k.User})
+		}
+		credStore := sigv4.NewStaticStore(keys)
+		// Exempt health endpoints from auth
+		exempt := func(r *http.Request) bool {
+			switch r.URL.Path {
+			case "/livez", "/readyz":
+				return true
+			default:
+				return false
+			}
+		}
+		handler = sigv4.Middleware(credStore, exempt)(handler)
+		slog.Info("sigv4 auth enabled")
+	}
+	mux.Handle("/", handler)
 
 	srv := &http.Server{
 		Addr:         cfg.Address,

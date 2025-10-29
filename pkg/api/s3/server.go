@@ -511,29 +511,30 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket
 		writeError(w, http.StatusBadRequest, "InvalidArgument", "Part number must be an integer between 1 and 10000.", r.URL.Path, "")
 		return
 	}
-	
+
 	// Verify upload exists
 	_, err = s.store.GetMultipartUpload(ctx, uploadID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
 		return
 	}
-	
-	// Upload the part (for now, store it as a temporary object)
-	partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
+
+	// Upload the part (store it under hidden .multipart/ prefix within the bucket namespace)
+	// Key layout: ".multipart/<object-key>/<uploadID>/part.<N>"
+	partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
 	etag, size, err := s.objs.Put(ctx, bucket, partKey, r.Body)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
-	
+
 	// Record the part in metadata
 	err = s.store.PutPart(ctx, uploadID, partNum, etag, size)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
-	
+
 	w.Header().Set("ETag", quoteETag(etag))
 	w.WriteHeader(http.StatusOK)
 }
@@ -592,9 +593,9 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	// Combine parts into final object using streaming to avoid loading all parts into memory
 	var partReaders []io.Reader
 	var partClosers []io.ReadCloser
-	
+
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
+		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
 		rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
 		if err != nil {
 			// Close any already opened readers
@@ -607,27 +608,27 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 		partReaders = append(partReaders, rc)
 		partClosers = append(partClosers, rc)
 	}
-	
+
 	// Ensure all part readers are closed after use
 	defer func() {
 		for _, closer := range partClosers {
 			closer.Close()
 		}
 	}()
-	
+
 	// Create a multi-reader that streams from all parts in sequence
 	combinedReader := io.MultiReader(partReaders...)
-	
+
 	// Write the final object by streaming from the combined reader
 	etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to create final object.", r.URL.Path, "")
 		return
 	}
-	
+
 	// Clean up parts
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
+		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
 		_ = s.objs.Delete(ctx, bucket, partKey)
 	}
 	
@@ -663,7 +664,7 @@ func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Reque
 	
 	// Delete all parts
 	for partNum := range upload.Parts {
-		partKey := bucket + "/.multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
+		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
 		_ = s.objs.Delete(ctx, bucket, partKey)
 	}
 	

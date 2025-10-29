@@ -3,3 +3,16 @@ address: ":8080"
 # One or more data directories (created if missing)
 dataDirs:
   - "./data"
+
+# Authentication (optional)
+# Auth is disabled by default ("none"). To enable SigV4 verification, set:
+#   authMode: "sigv4"
+# Provide static credentials here or via environment variable S3FREE_ACCESS_KEYS.
+authMode: "none"  # "none" or "sigv4"
+
+# accessKeys define static credentials when using SigV4.
+# Uncomment and provide at least one entry to enable static auth via config file.
+# accessKeys:
+#   - accessKey: "AKIAEXAMPLE"
+#     secretKey: "secret"
+#     user: "local"

@@ -99,6 +99,9 @@ func (l *LocalFS) List(ctx context.Context, bucket, prefix, startAfter string, m
 		rel, err := filepath.Rel(bdir, path)
 		if err != nil { return err }
 		key := filepath.ToSlash(rel)
+
+		// Skip internal multipart temp files (never list these)
+		if strings.HasPrefix(key, ".multipart/") { return nil }
 		
 		// Apply prefix filter
 		if prefix != "" && !strings.HasPrefix(key, prefix) { return nil }
