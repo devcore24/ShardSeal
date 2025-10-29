@@ -12,12 +12,13 @@
   - ListObjectsV2 (bucket object listing with prefix, pagination)
   - Multipart uploads (initiate/upload-part/complete/abort)
   - Config (YAML + env), structured logging, CI
+  - Prometheus metrics (/metrics) and HTTP instrumentation
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - AWS Signature V4 authentication
-  - Metrics/Tracing, BeeXL v1 self-healing format, erasure coding, background scrubber
+  - Tracing
+  - FreeXL v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
 
 ## Quick start
@@ -77,6 +78,17 @@ go test ./...
 go test ./pkg/api/s3 -v
 ```
 
+## Metrics
+- Exposes Prometheus metrics at /metrics on the same HTTP server.
+- Default counters and histograms:
+  - s3free_http_requests_total{method,code}
+  - s3free_http_request_duration_seconds_bucket/sum/count{method,code}
+  - s3free_http_inflight_requests
+- Example:
+```bash
+curl -s http://localhost:8080/metrics | head -n 20
+```
+
 ## Configuration
 Example at configs/local.yaml:
 ```yaml
@@ -114,10 +126,9 @@ Environment overrides:
 - Fixed bucket deletion to properly handle internal temporary files
 
 ## Roadmap (short)
-1) AWS SigV4 authentication
-2) Prometheus metrics and basic traces
-3) BeeXL v1 storage format + erasure coding scaffold
-4) Background scrubber and self-healing
+1) Basic tracing
+2) FreeXL v1 storage format + erasure coding scaffold
+3) Background scrubber and self-healing
 
 ## License
 Apache-2.0

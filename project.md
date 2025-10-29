@@ -72,7 +72,7 @@ A cross‑platform, open-source object/file storage system offering S3 compatibi
   - Tolerate up to m shard losses per stripe without data loss.
   - Background scrubbing constantly looks for latent corruption and heals proactively.
 
-## Storage Format: BeeXL v1 (self-healing by design)
+## Storage Format: FreeXL v1 (self-healing by design)
 Goals
 - Recoverability from partial state (missing metadata or data) using self-describing shards.
 - Fast integrity checks and precise localization of corruption.
@@ -84,7 +84,7 @@ On-Disk Layout (per bucket/object/version)
 - data shards: per-part, per-block shard files (or extented segments within larger files for compaction)
 
 Per-Shard Header (fixed-size, at file start)
-- Magic (BeeXLv1), format_version
+- Magic (FreeXLv1), format_version
 - object_id, bucket_id, version_id, part_id
 - stripe_id, block_index, shard_index, rs_k, rs_m
 - content_hash (BLAKE3 of plaintext block)
@@ -204,7 +204,7 @@ Compaction & GC
 
 ## Immediate Next Steps (MVP)
 1) Scaffold repo, CI, linting; choose libs (Pebble, BLAKE3, RS codec).
-2) Implement local single-node storage with BeeXL v1 headers/footers and manifest.
+2) Implement local single-node storage with FreeXL v1 headers/footers and manifest.
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
@@ -224,7 +224,8 @@ Compaction & GC
 - Unit tests for buckets/objects/multipart; added tests for LocalFS multipart visibility and emptiness
 - Internal multipart files are hidden from listings and empty checks; normalized part layout to ".multipart/<key>/<uploadId>/part.N"
 - Config extended with authMode and accessKeys; env overrides via S3FREE_AUTH_MODE and S3FREE_ACCESS_KEYS
-- SigV4 auth middleware scaffold wired behind config (disabled by default); full verification in progress
+- AWS SigV4 authentication implemented (header and presigned) with unit tests
+- Prometheus metrics exposed at /metrics; HTTP request instrumentation added
 - **Critical fixes applied (2025-10-27):**
   - Fixed CompleteMultipartUpload to use streaming (prevents memory exhaustion)
   - Fixed Range GET fallback (now returns 501 instead of loading entire file)
@@ -234,12 +235,11 @@ Compaction & GC
   - Fixed bucket deletion to exclude .multipart temporary files from empty check
 
 ### Next Up 🚧
-1) Implement full AWS SigV4 verification (canonical request, signing key derivation, headers and presigned URLs) with unit tests
-2) Observability: Prometheus metrics and basic traces
-3) BeeXL v1 storage spec and RS(k,m) codec scaffolding
-4) Background scrubber interfaces (no-op impl)
-5) Improve readiness (/readyz reflects dependency readiness)
-6) Consider moving .multipart storage to separate staging area (optional optimization)
+1) Basic tracing (OpenTelemetry scaffold)
+2) FreeXL v1 storage spec and RS(k,m) codec scaffolding
+3) Background scrubber interfaces (no-op impl)
+4) Improve readiness (/readyz reflects dependency readiness)
+5) Consider moving .multipart storage to separate staging area (optional optimization)
 
 ## Development Guide
 

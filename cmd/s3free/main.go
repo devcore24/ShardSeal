@@ -14,6 +14,7 @@ import (
 	"s3free/pkg/metadata"
 	"s3free/pkg/storage"
 	"s3free/pkg/security/sigv4"
+	"s3free/pkg/obs/metrics"
 )
 
 var version = "0.0.1-dev"
@@ -35,6 +36,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ready")) })
+
+	// Metrics: Prometheus /metrics endpoint and HTTP instrumentation
+	m := metrics.New()
+	mux.Handle("/metrics", m.Handler())
 
 	// Mount S3 API at root, optionally behind SigV4 middleware
 	store := metadata.NewMemoryStore()
@@ -62,6 +67,8 @@ func main() {
 		handler = sigv4.Middleware(credStore, exempt)(handler)
 		slog.Info("sigv4 auth enabled")
 	}
+	// Instrument S3 API with HTTP metrics
+	handler = m.Middleware(handler)
 	mux.Handle("/", handler)
 
 	srv := &http.Server{
