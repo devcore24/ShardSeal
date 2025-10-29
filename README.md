@@ -16,7 +16,7 @@
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - AWS Signature V4 authentication
+  - AWS Signature V4 authentication (scaffold; verification in progress)
   - Metrics/Tracing, BeeXL v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
 
@@ -35,7 +35,7 @@ S3FREE_CONFIG=configs/local.yaml make run
 
 Default address: :8080 (override with env S3FREE_ADDR). Data dirs: ./data (override with env S3FREE_DATA_DIRS as comma-separated list).
 
-### Using with curl (no auth yet)
+### Using with curl (auth disabled by default; SigV4 optional)
 Bucket naming: 3-63 chars; lowercase letters, digits, dots, hyphens; must start/end with letter or digit.
 
 ```bash
@@ -83,19 +83,28 @@ Example at configs/local.yaml:
 address: ":8080"
 dataDirs:
   - "./data"
+
+# Authentication (optional)
+# authMode: "none"        # "none" or "sigv4"
+# accessKeys:
+#   - accessKey: "AKIAEXAMPLE"
+#     secretKey: "secret"
+#     user: "local"
 ```
 <pre>
 Environment overrides:
 - S3FREE_ADDR         // server listen address (e.g., 0.0.0.0:8080)
 - S3FREE_DATA_DIRS    // comma-separated data directories
 - S3FREE_CONFIG       // path to YAML config
+- S3FREE_AUTH_MODE    // "none" (default) or "sigv4"
+- S3FREE_ACCESS_KEYS  // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
 </pre>
 
 ## Notes & limitations (current MVP)
-- No authentication yet (SigV4 pending)
+- Authentication: optional. SigV4 middleware available (disabled by default); full signature verification in progress.
 - ETag is MD5 of full object for single-part PUTs
 - Objects stored under ./data/objects/{bucket}/{key}
-- Multipart temporary files stored in .multipart/ subdirectory (excluded from bucket empty checks)
+- Multipart temporary files stored in .multipart/ subdirectory (excluded from listings and bucket empty checks)
 - Range requests require seekable storage (LocalFS supports this)
 
 ## Recent Improvements (2025-10-27)

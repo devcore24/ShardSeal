@@ -139,7 +139,7 @@ Compaction & GC
 
 ## CLI & Configuration (high level)
 - Single binary: `s3free` with subcommands `server`, `disk`, `cluster`, `admin`, `bench`.
-- Config file (YAML) + env overrides; hot-reload for select settings.
+- Config file (YAML) + env overrides (address, dataDirs, authMode, accessKeys); hot-reload for select settings.
 - Examples: local single-node with N disks (paths), distributed join via peer list.
 
 ## Development Plan & Roadmap
@@ -208,7 +208,7 @@ Compaction & GC
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
-## Current Status & Progress (Updated 2025-10-27)
+## Current Status & Progress (Updated 2025-10-29)
 
 ### Completed ✅
 - Project scaffold: modules, Makefile, CI
@@ -221,7 +221,10 @@ Compaction & GC
   - Multipart Upload (initiate/upload-part/complete/abort)
 - In-memory metadata store (buckets + multipart uploads)
 - Local filesystem ObjectStore (dev/MVP)
-- Unit tests for buckets/objects/multipart
+- Unit tests for buckets/objects/multipart; added tests for LocalFS multipart visibility and emptiness
+- Internal multipart files are hidden from listings and empty checks; normalized part layout to ".multipart/<key>/<uploadId>/part.N"
+- Config extended with authMode and accessKeys; env overrides via S3FREE_AUTH_MODE and S3FREE_ACCESS_KEYS
+- SigV4 auth middleware scaffold wired behind config (disabled by default); full verification in progress
 - **Critical fixes applied (2025-10-27):**
   - Fixed CompleteMultipartUpload to use streaming (prevents memory exhaustion)
   - Fixed Range GET fallback (now returns 501 instead of loading entire file)
@@ -231,11 +234,12 @@ Compaction & GC
   - Fixed bucket deletion to exclude .multipart temporary files from empty check
 
 ### Next Up 🚧
-1) AWS SigV4 auth (disable via config for local dev)
+1) Implement full AWS SigV4 verification (canonical request, signing key derivation, headers and presigned URLs) with unit tests
 2) Observability: Prometheus metrics and basic traces
 3) BeeXL v1 storage spec and RS(k,m) codec scaffolding
 4) Background scrubber interfaces (no-op impl)
-5) Consider moving .multipart storage to separate hidden area (optional optimization)
+5) Improve readiness (/readyz reflects dependency readiness)
+6) Consider moving .multipart storage to separate staging area (optional optimization)
 
 ## Development Guide
 
