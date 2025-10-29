@@ -46,6 +46,7 @@ type Config struct {
 	AuthMode     string            `yaml:"authMode"`            // "none" or "sigv4"
 	AccessKeys   []StaticAccessKey `yaml:"accessKeys"`
 	Tracing      TracingConfig     `yaml:"tracing"`
+	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -64,6 +65,14 @@ type TracingConfig struct {
 	ServiceName string  `yaml:"serviceName,omitempty"`  // override service.name; default "s3free"
 }
 
+// GCConfig controls periodic garbage-collection of stale multipart uploads.
+type GCConfig struct {
+	Enabled   bool   `yaml:"enabled"`              // disabled by default
+	Interval  string `yaml:"interval,omitempty"`   // e.g., "15m"
+	OlderThan string `yaml:"olderThan,omitempty"`  // e.g., "24h"
+}
+
+
 // Default returns a Config with safe, local defaults.
 func Default() Config {
 	return Config{
@@ -76,6 +85,11 @@ func Default() Config {
 			Protocol:    "grpc",
 			SampleRatio: 0.0,
 			ServiceName: "s3free",
+		},
+		GC: GCConfig{
+			Enabled:   false,
+			Interval:  "15m",
+			OlderThan: "24h",
 		},
 	}
 }
@@ -186,6 +200,23 @@ func applyEnvOverrides(cfg Config) Config {
 	if v := os.Getenv("S3FREE_TRACING_SERVICE"); v != "" {
 		cfg.Tracing.ServiceName = strings.TrimSpace(v)
 	}
+
+	// Multipart GC overrides
+	if v := os.Getenv("S3FREE_GC_ENABLED"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.GC.Enabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.GC.Enabled = false
+		}
+	}
+	if v := os.Getenv("S3FREE_GC_INTERVAL"); v != "" {
+		cfg.GC.Interval = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("S3FREE_GC_OLDER_THAN"); v != "" {
+		cfg.GC.OlderThan = strings.TrimSpace(v)
+	}
+
 	return cfg
 }
 

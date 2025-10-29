@@ -52,6 +52,13 @@ type Store interface {
 	PutPart(ctx context.Context, uploadID string, partNum int, etag string, size int64) error
 	CompleteMultipartUpload(ctx context.Context, uploadID string) (*MultipartUpload, error)
 	AbortMultipartUpload(ctx context.Context, uploadID string) error
+
+	// Introspection helpers
+	// ListMultipartUploads returns active uploads filtered by bucket.
+	// If bucket is empty, returns uploads across all buckets.
+	ListMultipartUploads(ctx context.Context, bucket string) ([]MultipartUpload, error)
+	// ActiveMultipartCount returns number of active uploads for a bucket.
+	ActiveMultipartCount(ctx context.Context, bucket string) (int, error)
 }
 
 // MemoryStore is a simple in-memory implementation suitable for development
@@ -178,6 +185,45 @@ func (m *MemoryStore) AbortMultipartUpload(ctx context.Context, uploadID string)
 	}
 	delete(m.uploads, uploadID)
 	return nil
+}
+
+// ListMultipartUploads returns active uploads filtered by bucket.
+// If bucket is empty, returns uploads across all buckets.
+// The returned slice contains copies and is safe to use without holding locks.
+func (m *MemoryStore) ListMultipartUploads(ctx context.Context, bucket string) ([]MultipartUpload, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]MultipartUpload, 0, len(m.uploads))
+	for _, up := range m.uploads {
+		if bucket == "" || up.Bucket == bucket {
+			// copy value
+			cp := *up
+			// copy parts map to avoid external mutation
+			if up.Parts != nil {
+				cp.Parts = make(map[int]Part, len(up.Parts))
+				for k, v := range up.Parts {
+					cp.Parts[k] = v
+				}
+			}
+			out = append(out, cp)
+		}
+	}
+	// Sort by Initiated time for stability
+	sort.Slice(out, func(i, j int) bool { return out[i].Initiated.Before(out[j].Initiated) })
+	return out, nil
+}
+
+// ActiveMultipartCount returns number of active uploads for the given bucket.
+func (m *MemoryStore) ActiveMultipartCount(ctx context.Context, bucket string) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, up := range m.uploads {
+		if up.Bucket == bucket {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // generateUploadID creates a unique upload ID.

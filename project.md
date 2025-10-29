@@ -229,6 +229,11 @@ Compaction & GC
 - Readiness improvements: /readyz now reflects dependency readiness (config loaded, storage initialized, metrics registered)
 - FreeXL v1 scaffolding: erasure Params/Codec interfaces with NoopCodec; manifest model and in-memory ManifestStore
 - Background scrubber scaffold: Scrubber interface and NoopScrubber with start/stop/runOnce and counters; unit tests added
+- OpenTelemetry tracing scaffold (optional; OTLP gRPC/HTTP) and HTTP tracing middleware wired
+- Storage I/O metrics for LocalFS (bytes, ops, latency) exposed via Prometheus
+- Admin API skeleton on separate port with read-only endpoints: /admin/health and /admin/version
+- Multipart temporary parts moved to internal staging bucket ".multipart" (outside user buckets)
+- Monitoring assets: Prometheus scrape config and alert rules; Grafana overview dashboard JSON
 - **Critical fixes applied (2025-10-27):**
   - Fixed CompleteMultipartUpload to use streaming (prevents memory exhaustion)
   - Fixed Range GET fallback (now returns 501 instead of loading entire file)
@@ -238,13 +243,11 @@ Compaction & GC
   - Fixed bucket deletion to exclude .multipart temporary files from empty check
 
 ### Next Up 🚧
-1) OpenTelemetry tracing scaffold (HTTP spans and exporter; off by default)
-2) Storage I/O metrics in LocalFS: bytes read/written, op latency histograms; expose via metrics registry
-3) Optional: move multipart temp parts to separate staging area outside bucket namespace; update LocalFS and tests
-4) Admin API skeleton on separate port (read-only endpoints: health/version/storage status); OIDC/RBAC wiring stubbed and disabled by default
-5) End-to-end SigV4 tests in S3 API package for header-signed and presigned URL flows using static keys
-6) Monitoring assets: example Grafana dashboards and Alertmanager rules; docs and sample configs
-7) Makefile convenience targets: run-local, run-sigv4, test-verbose
+1) Multipart lifecycle hardening: stale-part GC and guarding bucket delete during active uploads
+2) Monitoring documentation and additional dashboards; production Alertmanager integration examples
+3) Admin API hardening: OIDC authentication and RBAC scaffolding (disabled by default)
+4) FreeXL v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
+5) Tracing guidance: sampling defaults and span attributes for storage operations
 
 ## Development Guide
 

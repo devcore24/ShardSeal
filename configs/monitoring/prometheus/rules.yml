@@ -1,0 +1,62 @@
+groups:
+  - name: s3free.rules
+    interval: 30s
+    rules:
+      - alert: S3freeHighErrorRate
+        expr: |
+          (sum(rate(s3free_http_requests_total{code=~"5.."}[5m])) by ()
+            /
+           sum(rate(s3free_http_requests_total[5m])) by ()) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: s3free
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: "HTTP 5xx rate > 5% for 10m (current: {{ $value | printf \"%.2f\" }}). Investigate server logs and recent deployments."
+
+      - alert: S3freeVeryHighErrorRate
+        expr: |
+          (sum(rate(s3free_http_requests_total{code=~"5.."}[5m])) by ()
+            /
+           sum(rate(s3free_http_requests_total[5m])) by ()) > 0.15
+        for: 5m
+        labels:
+          severity: critical
+          service: s3free
+        annotations:
+          summary: "Very high HTTP 5xx error rate"
+          description: "HTTP 5xx rate > 15% for 5m (current: {{ $value | printf \"%.2f\" }}). Immediate attention required."
+
+      - alert: S3freeHighLatencyP99
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(s3free_http_request_duration_seconds_bucket[5m]))) > 1.0
+        for: 10m
+        labels:
+          severity: warning
+          service: s3free
+        annotations:
+          summary: "High HTTP latency p99"
+          description: "HTTP request duration p99 > 1s for 10m. Check saturation, disk IO, or dependencies."
+
+      - alert: S3freeStorageOpErrors
+        expr: |
+          sum(rate(s3free_storage_ops_total{result="error"}[5m])) by () > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: s3free
+        annotations:
+          summary: "Storage layer operation errors"
+          description: "Errors in storage ops observed (rate > 0 for 10m). Inspect s3free logs and filesystem health."
+
+      - alert: S3freeNotReady
+        expr: |
+          probe_success{job="blackbox_http", instance=~".*/readyz"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: s3free
+        annotations:
+          summary: "Readiness probe failing"
+          description: "Blackbox probe to /readyz is failing for 5m. Service may be unavailable."

@@ -43,6 +43,9 @@ const (
 	queryUploadID          = "uploadId"
 	queryPartNumber        = "partNumber"
 	queryUploads           = "uploads"
+
+	// Internal staging bucket for multipart temp parts (outside user buckets)
+	internalMultipartBucket = ".multipart"
 )
 
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
@@ -293,6 +296,12 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, name
 		writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+name, "")
 		return
 	}
+	// Guard: block deletion when active multipart uploads exist for this bucket
+	if n, err := s.store.ActiveMultipartCount(ctx, name); err == nil && n > 0 {
+		writeError(w, http.StatusConflict, errCodeBucketNotEmpty, "The bucket you tried to delete has active multipart uploads.", "/"+name, "")
+		return
+	}
+
 	empty, err := s.objs.IsBucketEmpty(ctx, name)
 	if err != nil {
 		slog.Error("failed to check if bucket is empty", "bucket", name, "error", err)
@@ -519,10 +528,10 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket
 		return
 	}
 
-	// Upload the part (store it under hidden .multipart/ prefix within the bucket namespace)
-	// Key layout: ".multipart/<object-key>/<uploadID>/part.<N>"
-	partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
-	etag, size, err := s.objs.Put(ctx, bucket, partKey, r.Body)
+	// Upload the part to internal staging bucket outside user namespace
+	// Key layout: "<bucket>/<object-key>/<uploadID>/part.<N>"
+	partKey := bucket + "/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
+	etag, size, err := s.objs.Put(ctx, internalMultipartBucket, partKey, r.Body)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
@@ -595,8 +604,8 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	var partClosers []io.ReadCloser
 
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
-		rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
+		partKey := bucket + "/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
+		rc, _, _, _, err := s.objs.Get(ctx, internalMultipartBucket, partKey)
 		if err != nil {
 			// Close any already opened readers
 			for _, closer := range partClosers {
@@ -628,8 +637,8 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 
 	// Clean up parts
 	for i := 1; i <= len(upload.Parts); i++ {
-		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
-		_ = s.objs.Delete(ctx, bucket, partKey)
+		partKey := bucket + "/" + key + "/" + uploadID + "/part." + strconv.Itoa(i)
+		_ = s.objs.Delete(ctx, internalMultipartBucket, partKey)
 	}
 	
 	// Complete the upload in metadata
@@ -664,8 +673,8 @@ func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Reque
 	
 	// Delete all parts
 	for partNum := range upload.Parts {
-		partKey := ".multipart/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
-		_ = s.objs.Delete(ctx, bucket, partKey)
+		partKey := bucket + "/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
+		_ = s.objs.Delete(ctx, internalMultipartBucket, partKey)
 	}
 	
 	// Abort in metadata

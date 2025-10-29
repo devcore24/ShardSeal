@@ -1,0 +1,49 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 30s
+
+# Example Prometheus configuration for scraping s3free and loading alert rules.
+# Adjust targets to your deployment environment.
+scrape_configs:
+  - job_name: "s3free"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "localhost:8080"   # s3free default listen address
+    # Optional relabel to avoid excessive labels from proxies
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "(.*)"
+        target_label: instance
+        replacement: "s3free"
+
+  # Example: node_exporter on the same host (uncomment if you run it)
+  # - job_name: "node_exporter"
+  #   static_configs:
+  #     - targets: ["localhost:9100"]
+
+  # Example: blackbox_exporter to probe health endpoints (uncomment if using blackbox)
+  # - job_name: "blackbox_http"
+  #   metrics_path: /probe
+  #   params:
+  #     module: [http_2xx]
+  #   static_configs:
+  #     - targets:
+  #         - http://localhost:8080/livez
+  #         - http://localhost:8080/readyz
+  #   relabel_configs:
+  #     - source_labels: [__address__]
+  #       target_label: __param_target
+  #     - source_labels: [__param_target]
+  #       target_label: instance
+  #     - target_label: __address__
+  #       replacement: "localhost:9115" # blackbox_exporter address
+
+rule_files:
+  - "rules.yml"
+
+# Optional Alertmanager config (commented). Configure your Alertmanager first.
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["localhost:9093"]

@@ -96,6 +96,24 @@ curl -s http://localhost:8080/metrics | head -n 20
 - /readyz: readiness probe gated on initialization completion
 - /metrics: Prometheus metrics endpoint
 
+## Monitoring (Prometheus + Grafana)
+- Prometheus sample config: configs/monitoring/prometheus/prometheus.yml
+- Example alert rules: configs/monitoring/prometheus/rules.yml
+- Grafana dashboard (import JSON): configs/monitoring/grafana/s3free_overview.json
+
+Quick start:
+```bash
+# 1) Run s3free (default :8080 exposes /metrics)
+S3FREE_CONFIG=configs/local.yaml make run
+
+# 2) Start Prometheus (adjust path as needed)
+prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
+
+# 3) Import Grafana dashboard JSON:
+#    configs/monitoring/grafana/s3free_overview.json
+#    and set the Prometheus datasource accordingly.
+```
+
 Admin endpoints (optional; if admin server enabled)
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
@@ -154,7 +172,7 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Authentication: optional. AWS SigV4 supported (header and presigned; disabled by default via config/env).
 - ETag is MD5 of full object for single-part PUTs
 - Objects stored under ./data/objects/{bucket}/{key}
-- Multipart temporary files stored in .multipart/ subdirectory (excluded from listings and bucket empty checks)
+- Multipart temporary parts stored in separate staging bucket: .multipart/<bucket>/<object-key>/<uploadId>/part.N (excluded from user listings and bucket empty checks; cleaned up on complete/abort)
 - Range requests require seekable storage (LocalFS supports this)
 
 ## Recent Improvements (2025-10-29)
