@@ -16,7 +16,7 @@
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - AWS Signature V4 authentication (scaffold; verification in progress)
+  - AWS Signature V4 authentication
   - Metrics/Tracing, BeeXL v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
 
@@ -101,7 +101,7 @@ Environment overrides:
 </pre>
 
 ## Notes & limitations (current MVP)
-- Authentication: optional. SigV4 middleware available (disabled by default); full signature verification in progress.
+- Authentication: optional. AWS SigV4 supported (header and presigned; disabled by default via config/env).
 - ETag is MD5 of full object for single-part PUTs
 - Objects stored under ./data/objects/{bucket}/{key}
 - Multipart temporary files stored in .multipart/ subdirectory (excluded from listings and bucket empty checks)
