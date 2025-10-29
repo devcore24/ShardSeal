@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"time"
 )
 
 // Package sigv4 provides scaffolding for AWS Signature V4 authentication.
@@ -204,44 +203,6 @@ func Middleware(store CredentialsStore, exempt func(*http.Request) bool) func(ht
 	}
 }
 
-// Helper: extract access key from Authorization header's Credential= component.
-// Authorization: AWS4-HMAC-SHA256 Credential=<AKID>/<Date>/<Region>/s3/aws4_request, SignedHeaders=..., Signature=...
-func extractAccessKeyFromAuthorization(auth string) (string, error) {
-	// Split by spaces to get the kv pairs
-	// Example pieces: ["AWS4-HMAC-SHA256", "Credential=AKID/20250101/us-east-1/s3/aws4_request,", "SignedHeaders=host;x-amz-date", "Signature=..."]
-	parts := strings.Split(auth, " ")
-	if len(parts) < 2 {
-		return "", ErrAuthInvalid
-	}
-	kv := parts[1:]
-	// Join back in case of commas then split by comma
-	joined := strings.Join(kv, " ")
-	fields := strings.Split(joined, ",")
-	for _, f := range fields {
-		f = strings.TrimSpace(f)
-		if strings.HasPrefix(f, "Credential=") {
-			cred := strings.TrimPrefix(f, "Credential=")
-			return extractAccessKeyFromCredential(cred)
-		}
-	}
-	return "", ErrAuthInvalid
-}
-
-// Helper: Credential format: <AKID>/<Date>/<Region>/<Service>/aws4_request
-func extractAccessKeyFromCredential(cred string) (string, error) {
-	if cred == "" {
-		return "", ErrAuthInvalid
-	}
-	slash := strings.Split(cred, "/")
-	if len(slash) < 5 {
-		return "", ErrAuthInvalid
-	}
-	ak := strings.TrimSpace(slash[0])
-	if ak == "" {
-		return "", ErrAuthInvalid
-	}
-	return ak, nil
-}
 
 // parseCredentialScope returns ak, date(YYYYMMDD), region, service from Credential scope.
 func parseCredentialScope(cred string) (string, string, string, string, error) {
@@ -360,10 +321,8 @@ func canonicalHeadersAndList(r *http.Request, signedHeaders []string) (string, [
 	for _, h := range signedHeaders {
 		need[strings.ToLower(h)] = struct{}{}
 	}
-	if _, ok := need["host"]; !ok {
-		// If signedHeaders was provided without host, we cannot proceed
-		// Some clients may always include host; enforce presence
-	}
+	// Note: if 'host' is omitted from signed headers, some clients may be non-compliant;
+	// we continue best-effort and rely on verification to fail if necessary.
 	// Build lowercased header map
 	type kv struct{ k, v string }
 	var hdrs []kv
@@ -564,10 +523,4 @@ func sha256HexFromReader(r io.Reader) string {
 	h := sha256.New()
 	_, _ = io.Copy(h, r)
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// Optional: basic time check helper (not enforced yet)
-func parseAmzDate(s string) (time.Time, error) {
-	// Format: 20060102T150405Z
-	return time.Parse("20060102T150405Z", s)
 }
