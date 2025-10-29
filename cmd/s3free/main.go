@@ -6,18 +6,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	"s3free/pkg/config"
 	"s3free/pkg/api/s3"
+	"s3free/pkg/config"
 	"s3free/pkg/metadata"
-	"s3free/pkg/storage"
-	"s3free/pkg/security/sigv4"
 	"s3free/pkg/obs/metrics"
+	"s3free/pkg/security/sigv4"
+	"s3free/pkg/storage"
 )
 
 var version = "0.0.1-dev"
+var ready atomic.Bool
 
 func main() {
 	// Load config from S3FREE_CONFIG or ./config.yaml; defaults otherwise.
@@ -35,7 +37,14 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ok")) })
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ready")) })
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
 
 	// Metrics: Prometheus /metrics endpoint and HTTP instrumentation
 	m := metrics.New()
@@ -44,7 +53,10 @@ func main() {
 	// Mount S3 API at root, optionally behind SigV4 middleware
 	store := metadata.NewMemoryStore()
 	objs, err := storage.NewLocalFS(cfg.DataDirs)
-	if err != nil { slog.Error("init storage", slog.String("error", err.Error())); os.Exit(1) }
+	if err != nil {
+		slog.Error("init storage", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 	api := s3.New(store, objs)
 
 	handler := api.Handler()
@@ -58,7 +70,7 @@ func main() {
 		// Exempt health endpoints from auth
 		exempt := func(r *http.Request) bool {
 			switch r.URL.Path {
-			case "/livez", "/readyz":
+			case "/livez", "/readyz", "/metrics":
 				return true
 			default:
 				return false
@@ -80,6 +92,7 @@ func main() {
 	}
 
 	go func() {
+		ready.Store(true)
 		slog.Info("s3free listening", slog.String("version", version), slog.String("addr", cfg.Address))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", slog.String("error", err.Error()))
@@ -91,6 +104,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	ready.Store(false)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

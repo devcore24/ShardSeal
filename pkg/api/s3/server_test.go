@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"sort"
+	"reflect"
 
 	"s3free/pkg/metadata"
 	"s3free/pkg/storage"
@@ -348,4 +349,90 @@ func TestMultipartUpload_Abort(t *testing.T) {
 func md5hex(b []byte) string {
 	h := md5.Sum(b)
 	return hex.EncodeToString(h[:])
+}
+
+func TestListObjectsV2_Pagination_Stability(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+	// Insert 10 keys a.txt..j.txt to exercise pagination ordering and continuity
+	for i := 0; i < 10; i++ {
+		key := string(rune('a'+i)) + ".txt"
+		_, _, _ = objs.Put(ctx, "bkt", key, bytes.NewBufferString(strings.Repeat("x", i+1)))
+	}
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	var (
+		token string
+		all   []string
+		page  int
+	)
+	for {
+		page++
+		url := "/bkt?list-type=2&max-keys=3"
+		if token != "" {
+			url += "&continuation-token=" + token
+		}
+		r := httptest.NewRequest(http.MethodGet, url, nil)
+		w := httptest.NewRecorder()
+		hs.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("page %d: expected 200, got %d: %s", page, w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		keys := extractXMLTags(body, "Key")
+		all = append(all, keys...)
+
+		isTruncated := strings.Contains(body, "<IsTruncated>true</IsTruncated>")
+		if !isTruncated {
+			break
+		}
+		token = extractSingleXMLTag(body, "NextContinuationToken")
+		if token == "" {
+			t.Fatalf("page %d: missing NextContinuationToken in truncated response", page)
+		}
+	}
+
+	// Expect exactly a.txt..j.txt in order
+	var want []string
+	for i := 0; i < 10; i++ {
+		want = append(want, string(rune('a'+i))+".txt")
+	}
+	if !reflect.DeepEqual(all, want) {
+		t.Fatalf("unexpected concatenated keys: got=%v want=%v", all, want)
+	}
+}
+
+// extractXMLTags returns all occurrences of <tag>value</tag> in order of appearance.
+func extractXMLTags(xmlStr, tag string) []string {
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	var out []string
+	for {
+		i := strings.Index(xmlStr, open)
+		if i == -1 {
+			break
+		}
+		xmlStr = xmlStr[i+len(open):]
+		j := strings.Index(xmlStr, close)
+		if j == -1 {
+			break
+		}
+		out = append(out, xmlStr[:j])
+		xmlStr = xmlStr[j+len(close):]
+	}
+	return out
+}
+
+// extractSingleXMLTag returns the first occurrence of <tag>value</tag> or "" if not found.
+func extractSingleXMLTag(xmlStr, tag string) string {
+	vals := extractXMLTags(xmlStr, tag)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
