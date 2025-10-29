@@ -40,11 +40,12 @@ import (
 //
 // See also: docs/ for operational guidance.
 type Config struct {
-	Address    string            `yaml:"address"`
-	DataDirs   []string          `yaml:"dataDirs"`
-	AuthMode   string            `yaml:"authMode"`            // "none" or "sigv4"
-	AccessKeys []StaticAccessKey `yaml:"accessKeys"`
-	Tracing    TracingConfig     `yaml:"tracing"`
+	Address      string            `yaml:"address"`
+	AdminAddress string            `yaml:"adminAddress"`       // optional separate admin/control-plane port
+	DataDirs     []string          `yaml:"dataDirs"`
+	AuthMode     string            `yaml:"authMode"`            // "none" or "sigv4"
+	AccessKeys   []StaticAccessKey `yaml:"accessKeys"`
+	Tracing      TracingConfig     `yaml:"tracing"`
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -66,9 +67,10 @@ type TracingConfig struct {
 // Default returns a Config with safe, local defaults.
 func Default() Config {
 	return Config{
-		Address:  ":8080",
-		DataDirs: []string{"./data"},
-		AuthMode: "none",
+		Address:      ":8080",
+		AdminAddress: "",
+		DataDirs:     []string{"./data"},
+		AuthMode:     "none",
 		Tracing: TracingConfig{
 			Enabled:     false,
 			Protocol:    "grpc",
@@ -127,6 +129,9 @@ func EnsureDirs(cfg Config) error {
 func applyEnvOverrides(cfg Config) Config {
 	if v := os.Getenv("S3FREE_ADDR"); v != "" {
 		cfg.Address = v
+	}
+	if v := os.Getenv("S3FREE_ADMIN_ADDR"); v != "" {
+		cfg.AdminAddress = v
 	}
 	if v := os.Getenv("S3FREE_DATA_DIRS"); v != "" {
 		// Comma-separated list

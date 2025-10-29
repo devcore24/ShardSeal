@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -111,6 +112,49 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// Optional Admin server on separate port with read-only endpoints
+	var adminSrv *http.Server
+	if cfg.AdminAddress != "" {
+		adminMux := http.NewServeMux()
+		// /admin/health: reports liveness and readiness along with version and listen address
+		adminMux.HandleFunc("/admin/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]any{
+				"status":   "ok",
+				"ready":    ready.Load(),
+				"version":  version,
+				"address":  cfg.Address,
+				"admin":    cfg.AdminAddress,
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		})
+		// /admin/version: returns version info
+		adminMux.HandleFunc("/admin/version", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			resp := map[string]string{
+				"version":   version,
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		})
+
+		adminSrv = &http.Server{
+			Addr:         cfg.AdminAddress,
+			Handler:      adminMux,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 10 * time.Second,
+			IdleTimeout:  30 * time.Second,
+		}
+		go func() {
+			slog.Info("admin listening", slog.String("addr", cfg.AdminAddress))
+			if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("admin server error", slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+		}()
+	}
+
 	go func() {
 		ready.Store(true)
 		slog.Info("s3free listening", slog.String("version", version), slog.String("addr", cfg.Address))
@@ -129,6 +173,12 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", slog.String("error", err.Error()))
+	}
+	// Shutdown admin server if running
+	if adminSrv != nil {
+		if err := adminSrv.Shutdown(ctx); err != nil {
+			slog.Error("admin shutdown error", slog.String("error", err.Error()))
+		}
 	}
 	// Shutdown tracing provider
 	if err := traceShutdown(ctx); err != nil {

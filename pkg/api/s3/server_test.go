@@ -2,6 +2,7 @@ package s3
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,12 +11,15 @@ import (
 	"os"
 	"context"
 	"crypto/md5"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 	"sort"
 	"reflect"
 
 	"s3free/pkg/metadata"
+	"s3free/pkg/security/sigv4"
 	"s3free/pkg/storage"
 )
 
@@ -435,4 +439,342 @@ func extractSingleXMLTag(xmlStr, tag string) string {
 		return ""
 	}
 	return vals[0]
+}
+
+
+// --- SigV4 end-to-end tests (header-signed and presigned) ---
+
+func TestSigV4_HeaderAuth_PutAndGet(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+	s := New(meta, objs)
+
+	// Wrap with SigV4 middleware
+	ak := "AKIDEXAMPLE"
+	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	store := sigv4.NewStaticStore([]sigv4.AccessKey{{AccessKey: ak, SecretKey: secret}})
+	exempt := func(r *http.Request) bool { return false }
+	handler := sigv4.Middleware(store, exempt)(s.Handler())
+
+	// 1) PUT with header auth (payload must be signed)
+	const region = "us-east-1"
+	const service = "s3"
+	const amzDate = "20250101T120000Z"
+	const date = "20250101" // scope date
+
+	putBody := "hello-signed"
+	putReq := httptest.NewRequest(http.MethodPut, "http://example.com/bkt/hello.txt", bytes.NewBufferString(putBody))
+	putReq.Header.Set("X-Amz-Date", amzDate)
+	// Compute SHA256 of payload and set x-amz-content-sha256
+	ph := sha256HexBytes([]byte(putBody))
+	putReq.Header.Set("X-Amz-Content-Sha256", strings.ToLower(ph))
+
+	// Signed headers for PUT
+	sh := []string{"host", "x-amz-content-sha256", "x-amz-date"}
+	canon, err := buildCanonicalRequestForTest(putReq, sh, strings.ToLower(ph), false)
+	if err != nil {
+		t.Fatalf("canonical request (PUT): %v", err)
+	}
+	crHash := sha256HexBytes([]byte(canon))
+	stringToSign := buildStringToSignForTest(amzDate, date, region, service, crHash)
+	sk := deriveSigningKeyForTest(secret, date, region, service)
+	signature := strings.ToLower(string(hmacSHA256HexForTest(sk, []byte(stringToSign))))
+	auth := "AWS4-HMAC-SHA256 Credential=" + ak + "/" + date + "/" + region + "/" + service + "/aws4_request, " +
+		"SignedHeaders=" + strings.Join(sh, ";") + ", Signature=" + signature
+	putReq.Header.Set("Authorization", auth)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, putReq)
+	if w.Code != 200 {
+		t.Fatalf("PUT with SigV4 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 2) GET with header auth (UNSIGNED-PAYLOAD allowed)
+	getReq := httptest.NewRequest(http.MethodGet, "http://example.com/bkt/hello.txt", nil)
+	getReq.Header.Set("X-Amz-Date", amzDate)
+	// Signed headers for GET
+	sh2 := []string{"host", "x-amz-date"}
+	canon2, err := buildCanonicalRequestForTest(getReq, sh2, "UNSIGNED-PAYLOAD", false)
+	if err != nil {
+		t.Fatalf("canonical request (GET): %v", err)
+	}
+	crHash2 := sha256HexBytes([]byte(canon2))
+	stringToSign2 := buildStringToSignForTest(amzDate, date, region, service, crHash2)
+	signature2 := strings.ToLower(string(hmacSHA256HexForTest(sk, []byte(stringToSign2))))
+	auth2 := "AWS4-HMAC-SHA256 Credential=" + ak + "/" + date + "/" + region + "/" + service + "/aws4_request, " +
+		"SignedHeaders=" + strings.Join(sh2, ";") + ", Signature=" + signature2
+	getReq.Header.Set("Authorization", auth2)
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, getReq)
+	if w.Code != 200 {
+		t.Fatalf("GET with SigV4 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != putBody {
+		t.Fatalf("unexpected body: got=%q want=%q", got, putBody)
+	}
+}
+
+func TestSigV4_Presigned_Get(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+	_, _, _ = objs.Put(ctx, "bkt", "obj.txt", bytes.NewBufferString("data"))
+
+	s := New(meta, objs)
+	ak := "AKIDEXAMPLE"
+	secret := "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+	store := sigv4.NewStaticStore([]sigv4.AccessKey{{AccessKey: ak, SecretKey: secret}})
+	exempt := func(r *http.Request) bool { return false }
+	handler := sigv4.Middleware(store, exempt)(s.Handler())
+
+	const region = "us-east-1"
+	const service = "s3"
+	const amzDate = "20250101T120000Z"
+	const date = "20250101"
+
+	// Base request
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/bkt/obj.txt", nil)
+	q := req.URL.Query()
+	q.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	q.Set("X-Amz-Credential", ak+"/"+date+"/"+region+"/"+service+"/aws4_request")
+	q.Set("X-Amz-Date", amzDate)
+	q.Set("X-Amz-SignedHeaders", "host")
+	// No X-Amz-Content-Sha256 -> default UNSIGNED-PAYLOAD for GET in presigned path
+	req.URL.RawQuery = q.Encode()
+
+	// Build canonical request for presigned mode and sign
+	canon, err := buildCanonicalRequestForTest(req, []string{"host"}, "UNSIGNED-PAYLOAD", true)
+	if err != nil {
+		t.Fatalf("canonical request (presigned GET): %v", err)
+	}
+	crHash := sha256HexBytes([]byte(canon))
+	stringToSign := buildStringToSignForTest(amzDate, date, region, service, crHash)
+	sk := deriveSigningKeyForTest(secret, date, region, service)
+	signature := strings.ToLower(string(hmacSHA256HexForTest(sk, []byte(stringToSign))))
+
+	q = req.URL.Query()
+	q.Set("X-Amz-Signature", signature)
+	req.URL.RawQuery = q.Encode()
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("Presigned GET expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "data" {
+		t.Fatalf("unexpected body: got=%q want=%q", got, "data")
+	}
+}
+
+// --- Minimal SigV4 signing helpers for tests (duplicate of verifier logic with reduced scope) ---
+
+func buildCanonicalRequestForTest(r *http.Request, signedHeaders []string, payloadHash string, presigned bool) (string, error) {
+	method := r.Method
+	uri := r.URL.EscapedPath()
+	if uri == "" || uri[0] != '/' {
+		uri = "/" + uri
+	}
+	uri = uriEncodePathForTest(uri)
+	query := canonicalQueryStringForTest(r, presigned)
+	canonHeaders, signed := canonicalHeadersAndListForTest(r, signedHeaders)
+	if len(signed) == 0 {
+		return "", fmt.Errorf("no signed headers")
+	}
+	signedCSV := strings.Join(signed, ";")
+
+	var b bytes.Buffer
+	b.WriteString(method)
+	b.WriteByte('\n')
+	b.WriteString(uri)
+	b.WriteByte('\n')
+	b.WriteString(query)
+	b.WriteByte('\n')
+	b.WriteString(canonHeaders)
+	b.WriteByte('\n')
+	b.WriteString(signedCSV)
+	b.WriteByte('\n')
+	b.WriteString(payloadHash)
+	return b.String(), nil
+}
+
+func canonicalQueryStringForTest(r *http.Request, presigned bool) string {
+	values := r.URL.Query()
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		if presigned && strings.EqualFold(k, "X-Amz-Signature") {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return strings.ToLower(keys[i]) < strings.ToLower(keys[j]) })
+	var parts []string
+	for _, k := range keys {
+		vs := values[k]
+		sort.Strings(vs)
+		for _, v := range vs {
+			parts = append(parts, uriEncodeForTest(k, false)+"="+uriEncodeForTest(v, false))
+		}
+	}
+	return strings.Join(parts, "&")
+}
+
+func canonicalHeadersAndListForTest(r *http.Request, signedHeaders []string) (string, []string) {
+	need := map[string]struct{}{}
+	for _, h := range signedHeaders {
+		need[strings.ToLower(h)] = struct{}{}
+	}
+	type kv struct{ k, v string }
+	var hdrs []kv
+	for name := range need {
+		if name == "host" {
+			host := r.Host
+			if host == "" {
+				host = r.Header.Get("Host")
+			}
+			if host != "" {
+				hdrs = append(hdrs, kv{k: "host", v: trimSpacesForTest(host)})
+			}
+			continue
+		}
+		val := r.Header.Get(headerCanonicalCaseForTest(name))
+		if val != "" {
+			hdrs = append(hdrs, kv{k: strings.ToLower(name), v: trimSpacesForTest(val)})
+		}
+	}
+	sort.Slice(hdrs, func(i, j int) bool { return hdrs[i].k < hdrs[j].k })
+	var b bytes.Buffer
+	actual := make([]string, 0, len(hdrs))
+	for _, h := range hdrs {
+		b.WriteString(h.k)
+		b.WriteByte(':')
+		b.WriteString(h.v)
+		b.WriteByte('\n')
+		actual = append(actual, h.k)
+	}
+	return b.String(), actual
+}
+
+func headerCanonicalCaseForTest(s string) string {
+	switch strings.ToLower(s) {
+	case "content-type":
+		return "Content-Type"
+	case "x-amz-content-sha256":
+		return "X-Amz-Content-Sha256"
+	case "x-amz-date":
+		return "X-Amz-Date"
+	case "host":
+		return "Host"
+	default:
+		return s
+	}
+}
+
+func uriEncodeForTest(s string, encodeSlash bool) string {
+	var b bytes.Buffer
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			b.WriteByte(c)
+		} else if c == '/' && !encodeSlash {
+			b.WriteByte(c)
+		} else {
+			b.WriteString("%")
+			b.WriteString(strings.ToUpper(hex.EncodeToString([]byte{c})))
+		}
+	}
+	return b.String()
+}
+
+func uriEncodePathForTest(path string) string {
+	if path == "" {
+		return "/"
+	}
+	var b bytes.Buffer
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '/' {
+			b.WriteByte('/')
+			continue
+		}
+		if (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			b.WriteByte(c)
+		} else {
+			b.WriteString("%")
+			b.WriteString(strings.ToUpper(hex.EncodeToString([]byte{c})))
+		}
+	}
+	return b.String()
+}
+
+func sha256HexBytes(bz []byte) string {
+	h := sha256.Sum256(bz)
+	return hex.EncodeToString(h[:])
+}
+
+func hmacSHA256HexForTest(key, msg []byte) []byte {
+	m := hmac.New(sha256.New, key)
+	m.Write(msg)
+	sum := m.Sum(nil)
+	dst := make([]byte, hex.EncodedLen(len(sum)))
+	hex.Encode(dst, sum)
+	return dst
+}
+
+func deriveSigningKeyForTest(secret, date, region, service string) []byte {
+	kDate := hmacSumForTest([]byte("AWS4"+secret), []byte(date))
+	kRegion := hmacSumForTest(kDate, []byte(region))
+	kService := hmacSumForTest(kRegion, []byte(service))
+	kSigning := hmacSumForTest(kService, []byte("aws4_request"))
+	return kSigning
+}
+
+func hmacSumForTest(key, msg []byte) []byte {
+	m := hmac.New(sha256.New, key)
+	m.Write(msg)
+	return m.Sum(nil)
+}
+
+func buildStringToSignForTest(amzDate, date, region, service, canonicalRequestHash string) string {
+	var b strings.Builder
+	b.WriteString("AWS4-HMAC-SHA256\n")
+	b.WriteString(amzDate)
+	b.WriteByte('\n')
+	b.WriteString(date)
+	b.WriteByte('/')
+	b.WriteString(region)
+	b.WriteString("/" + service + "/aws4_request\n")
+	b.WriteString(canonicalRequestHash)
+	return b.String()
+}
+
+func trimSpacesForTest(s string) string {
+	s = strings.TrimSpace(s)
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if !space {
+				b.WriteByte(' ')
+				space = true
+			}
+		} else {
+			space = false
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

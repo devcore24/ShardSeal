@@ -13,12 +13,13 @@
   - Multipart uploads (initiate/upload-part/complete/abort)
   - Config (YAML + env), structured logging, CI
   - Prometheus metrics (/metrics) and HTTP instrumentation
+  - Tracing: OpenTelemetry scaffold (optional; OTLP gRPC/HTTP)
   - Authentication: AWS Signature V4 (optional; header and presigned URL)
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
+  - Admin API skeleton (optional, separate port): /admin/health, /admin/version
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - Tracing
   - FreeXL v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
 
@@ -95,10 +96,17 @@ curl -s http://localhost:8080/metrics | head -n 20
 - /readyz: readiness probe gated on initialization completion
 - /metrics: Prometheus metrics endpoint
 
+Admin endpoints (optional; if admin server enabled)
+- /admin/health: JSON status with ready/version/addresses
+- /admin/version: JSON version info
+
 ## Configuration
 Example at configs/local.yaml:
 ```yaml
 address: ":8080"
+# Optional admin/control plane on a separate port (read-only endpoints)
+# adminAddress: ":9090"
+
 dataDirs:
   - "./data"
 
@@ -108,14 +116,28 @@ dataDirs:
 #   - accessKey: "AKIAEXAMPLE"
 #     secretKey: "secret"
 #     user: "local"
+
+# Tracing (optional - OpenTelemetry OTLP)
+# tracing:
+#   enabled: false
+#   endpoint: "localhost:4317"  # grpc default; or "localhost:4318" for http
+#   protocol: "grpc"            # "grpc" or "http"
+#   sampleRatio: 0.0            # 0.0-1.0
+#   serviceName: "s3free"
 ```
 <pre>
 Environment overrides:
-- S3FREE_ADDR         // server listen address (e.g., 0.0.0.0:8080)
-- S3FREE_DATA_DIRS    // comma-separated data directories
-- S3FREE_CONFIG       // path to YAML config
-- S3FREE_AUTH_MODE    // "none" (default) or "sigv4"
-- S3FREE_ACCESS_KEYS  // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
+- S3FREE_CONFIG           // path to YAML config
+- S3FREE_ADDR             // data-plane listen address (e.g., 0.0.0.0:8080)
+- S3FREE_ADMIN_ADDR       // admin-plane listen address (e.g., 0.0.0.0:9090) to enable admin endpoints
+- S3FREE_DATA_DIRS        // comma-separated data directories
+- S3FREE_AUTH_MODE        // "none" (default) or "sigv4"
+- S3FREE_ACCESS_KEYS      // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
+- S3FREE_TRACING_ENABLED  // "true"/"false"
+- S3FREE_TRACING_ENDPOINT // e.g., localhost:4317 (grpc) or localhost:4318 (http)
+- S3FREE_TRACING_PROTOCOL // "grpc" or "http"
+- S3FREE_TRACING_SAMPLE   // 0.0 - 1.0
+- S3FREE_TRACING_SERVICE  // service.name override
 </pre>
 
 ## Authentication (optional SigV4)
@@ -143,9 +165,9 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Hid internal multipart files from listings and bucket-empty checks; normalized temp part layout
 
 ## Roadmap (short)
-1) Basic tracing
-2) FreeXL v1 storage format + erasure coding scaffold
-3) Background scrubber and self-healing
+1) FreeXL v1 storage format + erasure coding
+2) Background scrubber and self-healing
+3) Admin API hardening (OIDC/RBAC), monitoring assets (dashboards/alerts)
 
 ## License
 Apache-2.0
