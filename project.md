@@ -1,4 +1,4 @@
-# s3free — Open S3-compatible, self-healing object store (Go)
+# S3free — Open S3-compatible, self-healing object store (Go)
 
 A cross‑platform, open-source object/file storage system offering S3 compatibility with built‑in self-healing, strong data integrity, and corruption recovery—without enterprise gates. Written in Go.
 

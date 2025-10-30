@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,37 +17,73 @@ import (
 
 // S3 API constants
 const (
-	s3Xmlns = "http://s3.amazonaws.com/doc/2006-03-01/"
-	
-	// Error codes
-	errCodeNoSuchBucket        = "NoSuchBucket"
-	errCodeNoSuchKey           = "NoSuchKey"
-	errCodeBucketNotEmpty      = "BucketNotEmpty"
-	errCodeBucketAlreadyExists = "BucketAlreadyOwnedByYou"
-	errCodeInvalidBucketName   = "InvalidBucketName"
-	errCodeInternalError       = "InternalError"
-	errCodeMethodNotAllowed    = "MethodNotAllowed"
-	errCodeNotImplemented      = "NotImplemented"
-	errCodeInvalidRange        = "InvalidRange"
-	errCodeInvalidArgument     = "InvalidArgument"
-	errCodeNoSuchUpload        = "NoSuchUpload"
-	errCodeInvalidPart         = "InvalidPart"
-	errCodeMalformedXML        = "MalformedXML"
-	errCodeRangeNotSatisfiable = "RequestedRangeNotSatisfiable"
-	
-	// Query parameters
-	queryListType          = "list-type"
-	queryPrefix            = "prefix"
-	queryContinuationToken = "continuation-token"
-	queryStartAfter        = "start-after"
-	queryMaxKeys           = "max-keys"
-	queryUploadID          = "uploadId"
-	queryPartNumber        = "partNumber"
-	queryUploads           = "uploads"
+s3Xmlns = "http://s3.amazonaws.com/doc/2006-03-01/"
 
-	// Internal staging bucket for multipart temp parts (outside user buckets)
-	internalMultipartBucket = ".multipart"
+// Error codes
+errCodeNoSuchBucket        = "NoSuchBucket"
+errCodeNoSuchKey           = "NoSuchKey"
+errCodeBucketNotEmpty      = "BucketNotEmpty"
+errCodeBucketAlreadyExists = "BucketAlreadyOwnedByYou"
+errCodeInvalidBucketName   = "InvalidBucketName"
+errCodeInternalError       = "InternalError"
+errCodeMethodNotAllowed    = "MethodNotAllowed"
+errCodeNotImplemented      = "NotImplemented"
+errCodeInvalidRange        = "InvalidRange"
+errCodeInvalidArgument     = "InvalidArgument"
+errCodeNoSuchUpload        = "NoSuchUpload"
+errCodeInvalidPart         = "InvalidPart"
+errCodeMalformedXML        = "MalformedXML"
+errCodeRangeNotSatisfiable = "RequestedRangeNotSatisfiable"
+errCodeEntityTooLarge      = "EntityTooLarge"
+errCodeEntityTooSmall      = "EntityTooSmall"
+
+// Query parameters
+queryListType          = "list-type"
+queryPrefix            = "prefix"
+queryContinuationToken = "continuation-token"
+queryStartAfter        = "start-after"
+queryMaxKeys           = "max-keys"
+queryUploadID          = "uploadId"
+queryPartNumber        = "partNumber"
+queryUploads           = "uploads"
+
+// Internal staging bucket for multipart temp parts (outside user buckets)
+internalMultipartBucket = ".multipart"
+
+// Limits (align with S3 semantics)
+singlePutMaxBytes     = 5 * 1024 * 1024 * 1024 // 5 GiB single PUT cap
+minMultipartPartSize  = 5 * 1024 * 1024        // 5 MiB for all parts except last
 )
+
+// capReader utilities for enforcing streaming size caps on single PUTs.
+var errTooLarge = errors.New("entity too large")
+
+// capReader enforces a maximum number of bytes read; returns errTooLarge when exceeded.
+// It never buffers beyond the capped amount and supports underlying streaming readers.
+type capReader struct {
+r   io.Reader
+max int64
+n   int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+if c.n >= c.max {
+	return 0, errTooLarge
+}
+remain := c.max - c.n
+if int64(len(p)) > remain {
+	p = p[:remain]
+}
+n, err := c.r.Read(p)
+c.n += int64(n)
+if err != nil {
+	return n, err
+}
+if c.n >= c.max {
+	return n, errTooLarge
+}
+return n, nil
+}
 
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
 // Dependencies are injected for testability and future distribution.
@@ -146,14 +183,26 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 	
 	switch r.Method {
 	case http.MethodPut:
-		// Put object
+		// Put object (single-part). Enforce S3-like single PUT size cap (5 GiB).
 		if ok, _ := s.store.BucketExists(r.Context(), bucket); !ok {
-			writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket, "")
+			writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+bucket, "")
 			return
 		}
-		etag, _, err := s.objs.Put(r.Context(), bucket, key, r.Body)
+		// If Content-Length is present and exceeds cap, reject early.
+		if cl := r.Header.Get("Content-Length"); cl != "" {
+			if v, err := strconv.ParseInt(cl, 10, 64); err == nil && v > singlePutMaxBytes {
+				writeError(w, http.StatusBadRequest, errCodeEntityTooLarge, "Object size exceeds single PUT limit; use Multipart Upload.", r.URL.Path, "")
+				return
+			}
+		}
+		reader := &capReader{r: r.Body, max: singlePutMaxBytes}
+		etag, _, err := s.objs.Put(r.Context(), bucket, key, reader)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+			if errors.Is(err, errTooLarge) {
+				writeError(w, http.StatusBadRequest, errCodeEntityTooLarge, "Object size exceeds single PUT limit; use Multipart Upload.", r.URL.Path, "")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 			return
 		}
 		w.Header().Set("ETag", quoteETag(etag))
@@ -584,22 +633,50 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	// Verify all parts are present and match
-	for _, reqPart := range req.Parts {
-		part, ok := upload.Parts[reqPart.PartNumber]
-		if !ok {
-			writeError(w, http.StatusBadRequest, "InvalidPart", "One or more of the specified parts could not be found.", r.URL.Path, "")
-			return
+		// Verify all parts are present and match
+		for _, reqPart := range req.Parts {
+			part, ok := upload.Parts[reqPart.PartNumber]
+			if !ok {
+				writeError(w, http.StatusBadRequest, errCodeInvalidPart, "One or more of the specified parts could not be found.", r.URL.Path, "")
+				return
+			}
+			// ETags in request may be quoted, so compare without quotes
+			reqETag := strings.Trim(reqPart.ETag, "\"")
+			if part.ETag != reqETag {
+				writeError(w, http.StatusBadRequest, errCodeInvalidPart, "One or more of the specified parts has an incorrect ETag.", r.URL.Path, "")
+				return
+			}
 		}
-		// ETags in request may be quoted, so compare without quotes
-		reqETag := strings.Trim(reqPart.ETag, "\"")
-		if part.ETag != reqETag {
-			writeError(w, http.StatusBadRequest, "InvalidPart", "One or more of the specified parts has an incorrect ETag.", r.URL.Path, "")
-			return
+		// Enforce minimum part size (5 MiB) for all parts except the last listed part.
+		if len(req.Parts) > 1 {
+			// Only enforce minimum part size when final object size is at least the threshold.
+			var totalSize int64
+			for _, p := range req.Parts {
+				if part, ok := upload.Parts[p.PartNumber]; ok {
+					totalSize += part.Size
+				}
+			}
+			if totalSize >= minMultipartPartSize {
+				lastNum := 0
+				for _, p := range req.Parts {
+					if p.PartNumber > lastNum {
+						lastNum = p.PartNumber
+					}
+				}
+				for _, p := range req.Parts {
+					if p.PartNumber == lastNum {
+						continue // last part may be smaller
+					}
+					part := upload.Parts[p.PartNumber]
+					if part.Size < minMultipartPartSize {
+						writeError(w, http.StatusBadRequest, errCodeEntityTooSmall, "Each part except the last must be at least 5 MiB.", r.URL.Path, "")
+						return
+					}
+				}
+			}
 		}
-	}
-	
-	// Combine parts into final object using streaming to avoid loading all parts into memory
+		
+		// Combine parts into final object using streaming to avoid loading all parts into memory
 	var partReaders []io.Reader
 	var partClosers []io.ReadCloser
 

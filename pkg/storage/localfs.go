@@ -54,17 +54,50 @@ func (l *LocalFS) observe(op string, bytes int64, err error, start time.Time) {
 func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (string, int64, error) {
 	start := time.Now()
 	path, err := l.objectPath(bucket, key)
-	if err != nil { l.observe("put", 0, err, start); return "", 0, err }
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { l.observe("put", 0, err, start); return "", 0, err }
-	f, err := os.Create(path)
-	if err != nil { l.observe("put", 0, err, start); return "", 0, err }
-	defer f.Close()
-	// compute MD5 while writing
+	if err != nil {
+		l.observe("put", 0, err, start)
+		return "", 0, err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		l.observe("put", 0, err, start)
+		return "", 0, err
+	}
+
+	// Write to a temporary file and atomically rename to the final path.
+	tmp, err := os.CreateTemp(dir, ".put-*")
+	if err != nil {
+		l.observe("put", 0, err, start)
+		return "", 0, err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
 	h := md5.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
-	if err != nil { l.observe("put", n, err, start); return "", n, err }
+	n, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
+	// Attempt to flush data to disk on success before rename.
+	if copyErr == nil {
+		if err := tmp.Sync(); err != nil {
+			copyErr = err
+		}
+	}
+	// Close the file handle
+	if cerr := tmp.Close(); copyErr == nil && cerr != nil {
+		copyErr = cerr
+	}
+	if copyErr != nil {
+		l.observe("put", n, copyErr, start)
+		return "", n, copyErr
+	}
+
+	// Atomic rename to final path
+	if err := os.Rename(tmpName, path); err != nil {
+		l.observe("put", n, err, start)
+		return "", n, err
+	}
+
 	etag := hex.EncodeToString(h.Sum(nil))
-	// fs timestamp is last-modified
+	// best-effort set mtime as last-modified
 	_ = os.Chtimes(path, time.Now(), time.Now())
 	l.observe("put", n, nil, start)
 	return etag, n, nil

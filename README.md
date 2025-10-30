@@ -184,6 +184,9 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Objects stored under ./data/objects/{bucket}/{key}
 - Multipart temporary parts stored in separate staging bucket: .multipart/<bucket>/<object-key>/<uploadId>/part.N (excluded from user listings and bucket empty checks; cleaned up on complete/abort)
 - Range requests require seekable storage (LocalFS supports this)
+- Single PUT size cap: 5 GiB. Larger uploads must use Multipart Upload (responds with S3 error code EntityTooLarge).
+- Multipart part size: 5 MiB minimum for all parts except the final part (responds with EntityTooSmall when enforced). Intended for S3 compatibility; very small multi-part aggregates used in tests may bypass this check.
+- LocalFS writes are atomic via temp+rename on Put, reducing risk of partial files on error.
 
 ## Recent Improvements (2025-10-29)
 - Implemented AWS SigV4 authentication verification (headers and presigned) with unit tests
