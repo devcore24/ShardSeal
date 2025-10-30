@@ -2,144 +2,167 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"sync"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
-
-	"s3free/pkg/erasure"
 )
 
-// Manifest describes object layout and integrity metadata for FreeXL v1.
-// This is a scaffold and subject to evolution; keep additions backward-compatible.
-type Manifest struct {
-	Bucket       string
-	Key          string
-	VersionID    string
-	Size         int64
-	ContentType  string
-	ETag         string
-	LastModified time.Time
+// ManifestFilename is the filename used to persist object manifests alongside data.
+const ManifestFilename = "object.meta"
 
-	UserMetadata map[string]string
+// ManifestFormatV1 identifies the v1 JSON encoding format for manifests (FreeXL v1).
+const ManifestFormatV1 = "FreeXLv1"
 
-	// Parts contains per-part metadata (for single-part objects this is length 1).
-	Parts []PartMeta
-
-	// RS erasure coding parameters for this object.
-	RS erasure.Params
-
-	// Placement hint describing where shards reside (node/disk identifiers).
-	Placement []ShardPlacement
-
-	// Optional encryption metadata (SSE-S3/SSE-C scaffolding).
-	Encryption *EncryptionInfo
-
-	// Integrity anchors (e.g., Merkle roots) - placeholder for later.
-	Integrity *IntegrityInfo
+// RSParams describes Reed–Solomon parameters for an object.
+type RSParams struct {
+	K          int   `json:"k"`           // data shards
+	M          int   `json:"m"`           // parity shards
+	BlockSize  int64 `json:"block_size"`  // bytes per block before RS
+	StripeSize int64 `json:"stripe_size"` // total per stripe (derived from K+M and BlockSize)
 }
 
-// PartMeta describes one logical object part.
+// PartMeta describes a single part of a (possibly multipart) object.
 type PartMeta struct {
-	Index      int
-	Size       int64
-	ETag       string
-	BlockCount int
+	Index      int    `json:"index"`
+	Size       int64  `json:"size"`
+	ETag       string `json:"etag"`
+	BlockCount int    `json:"block_count"`
 }
 
-// ShardPlacement identifies where a shard is stored.
-type ShardPlacement struct {
-	ShardIndex int
-	NodeID     string
-	DiskID     string
-	Generation int64
-}
-
-// EncryptionInfo is a placeholder for encryption metadata.
-type EncryptionInfo struct {
-	KeyID     string
-	Algorithm string
-	Nonce     []byte
-}
-
-// IntegrityInfo is a placeholder for integrity metadata (e.g., Merkle root).
+// IntegrityInfo stores object-level integrity data.
 type IntegrityInfo struct {
-	ObjectHashAlgo string
-	ObjectMerkle   []byte
+	ObjectMerkleRoot string `json:"object_merkle_root,omitempty"`
+	HashAlgo         string `json:"hash_algo,omitempty"` // e.g., "sha256", "blake3"
 }
 
-// ManifestStore abstracts storing and retrieving object manifests.
-// Implementations MUST be concurrency-safe.
-type ManifestStore interface {
-	PutManifest(ctx context.Context, m Manifest) error
-	GetManifest(ctx context.Context, bucket, key, versionID string) (Manifest, error)
-	DeleteManifest(ctx context.Context, bucket, key, versionID string) error
+// Manifest is the persisted description of an object, its layout, and integrity metadata.
+// Format is JSON (v1). Later versions may switch to Protobuf; version is recorded in Version field.
+type Manifest struct {
+	Version      string        `json:"version"` // "FreeXLv1"
+	Bucket       string        `json:"bucket"`
+	Key          string        `json:"key"`
+	Size         int64         `json:"size"`
+	ETag         string        `json:"etag"`
+	ContentType  string        `json:"content_type,omitempty"`
+	LastModified time.Time     `json:"last_modified"`
+	Parts        []PartMeta    `json:"parts,omitempty"`
+	RS           RSParams      `json:"rs_params"`
+	Integrity    IntegrityInfo `json:"integrity,omitempty"`
+	// Future fields: placement, encryption, custom metadata, version IDs, etc.
 }
 
-// ErrManifestNotFound signals missing manifest.
-var ErrManifestNotFound = errors.New("manifest: not found")
-
-// MemManifestStore is an in-memory ManifestStore, suitable for tests and scaffolding.
-// It is NOT durable and not for production use.
-type MemManifestStore struct {
-	mu   sync.RWMutex
-	data map[string]Manifest
-}
-
-// NewMemManifestStore creates an empty in-memory manifest store.
-func NewMemManifestStore() *MemManifestStore {
-	return &MemManifestStore{data: make(map[string]Manifest)}
-}
-
-func (s *MemManifestStore) PutManifest(_ context.Context, m Manifest) error {
+// ValidateBasic performs minimal structural validation on the manifest.
+func (m *Manifest) ValidateBasic() error {
+	if m == nil {
+		return errors.New("manifest nil")
+	}
+	if m.Version != ManifestFormatV1 {
+		return fmt.Errorf("invalid manifest version %q", m.Version)
+	}
 	if m.Bucket == "" || m.Key == "" {
-		return errors.New("manifest: bucket/key required")
+		return errors.New("manifest requires bucket and key")
 	}
-	if m.VersionID == "" {
-		// For scaffolding, default single version if absent.
-		m.VersionID = "v1"
+	if m.Size < 0 {
+		return errors.New("manifest size negative")
 	}
-	// Ensure LastModified set
+	if m.RS.K <= 0 || m.RS.M < 0 {
+		return errors.New("invalid RS params")
+	}
+	return nil
+}
+
+// manifestPath returns the absolute path to the manifest file given a base data directory.
+// Layout mirrors LocalFS objects layout: <base>/objects/<bucket>/<key>/object.meta
+func manifestPath(baseDir, bucket, key string) (string, error) {
+	if baseDir == "" {
+		return "", errors.New("baseDir empty")
+	}
+	cleanKey := filepath.ToSlash(filepath.Clean("/" + key))[1:]
+	p := filepath.Join(baseDir, "objects", bucket, cleanKey, ManifestFilename)
+	return p, nil
+}
+
+// SaveManifest writes the manifest atomically under the given base directory.
+// The write is done by writing a temp file in the target directory and renaming it.
+func SaveManifest(ctx context.Context, baseDir, bucket, key string, m *Manifest) error {
+	if m == nil {
+		return errors.New("nil manifest")
+	}
+	if m.Version == "" {
+		m.Version = ManifestFormatV1
+	}
 	if m.LastModified.IsZero() {
 		m.LastModified = time.Now().UTC()
 	}
-	k := makeKey(m.Bucket, m.Key, m.VersionID)
-	s.mu.Lock()
-	s.data[k] = m
-	s.mu.Unlock()
+	if err := m.ValidateBasic(); err != nil {
+		return err
+	}
+	dst, err := manifestPath(baseDir, bucket, key)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	// Marshal JSON (compact to reduce overhead; indent for readability if preferred)
+	data, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".object.meta.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	// Write
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// fsync to be safer on crashes
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Atomic rename
+	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	// Best-effort timestamp
+	_ = os.Chtimes(dst, time.Now(), m.LastModified)
 	return nil
 }
 
-func (s *MemManifestStore) GetManifest(_ context.Context, bucket, key, versionID string) (Manifest, error) {
-	if versionID == "" {
-		versionID = "v1"
+// LoadManifest reads and unmarshals the manifest for an object.
+func LoadManifest(ctx context.Context, baseDir, bucket, key string) (*Manifest, error) {
+	path, err := manifestPath(baseDir, bucket, key)
+	if err != nil {
+		return nil, err
 	}
-	k := makeKey(bucket, key, versionID)
-	s.mu.RLock()
-	m, ok := s.data[k]
-	s.mu.RUnlock()
-	if !ok {
-		return Manifest{}, ErrManifestNotFound
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	return m, nil
-}
+	defer f.Close()
 
-func (s *MemManifestStore) DeleteManifest(_ context.Context, bucket, key, versionID string) error {
-	if versionID == "" {
-		versionID = "v1"
+	var m Manifest
+	dec := json.NewDecoder(f)
+	if err := dec.Decode(&m); err != nil {
+		return nil, err
 	}
-	k := makeKey(bucket, key, versionID)
-	s.mu.Lock()
-	_, ok := s.data[k]
-	if ok {
-		delete(s.data, k)
+	// Basic validation
+	if err := m.ValidateBasic(); err != nil {
+		return nil, err
 	}
-	s.mu.Unlock()
-	if !ok {
-		return ErrManifestNotFound
-	}
-	return nil
-}
-
-func makeKey(bucket, key, versionID string) string {
-	return bucket + "|" + key + "|" + versionID
+	return &m, nil
 }

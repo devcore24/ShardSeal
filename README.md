@@ -114,7 +114,7 @@ prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
 #    and set the Prometheus datasource accordingly.
 ```
 
-Admin endpoints (optional; if admin server enabled)
+Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart.
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
 
@@ -145,17 +145,27 @@ dataDirs:
 ```
 <pre>
 Environment overrides:
-- S3FREE_CONFIG           // path to YAML config
-- S3FREE_ADDR             // data-plane listen address (e.g., 0.0.0.0:8080)
-- S3FREE_ADMIN_ADDR       // admin-plane listen address (e.g., 0.0.0.0:9090) to enable admin endpoints
-- S3FREE_DATA_DIRS        // comma-separated data directories
-- S3FREE_AUTH_MODE        // "none" (default) or "sigv4"
-- S3FREE_ACCESS_KEYS      // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
-- S3FREE_TRACING_ENABLED  // "true"/"false"
-- S3FREE_TRACING_ENDPOINT // e.g., localhost:4317 (grpc) or localhost:4318 (http)
-- S3FREE_TRACING_PROTOCOL // "grpc" or "http"
-- S3FREE_TRACING_SAMPLE   // 0.0 - 1.0
-- S3FREE_TRACING_SERVICE  // service.name override
+- S3FREE_CONFIG                 // path to YAML config
+- S3FREE_ADDR                   // data-plane listen address (e.g., 0.0.0.0:8080)
+- S3FREE_ADMIN_ADDR             // admin-plane listen address (e.g., 0.0.0.0:9090) to enable admin endpoints
+- S3FREE_DATA_DIRS              // comma-separated data directories
+- S3FREE_AUTH_MODE              // "none" (default) or "sigv4"
+- S3FREE_ACCESS_KEYS            // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
+- S3FREE_TRACING_ENABLED        // "true"/"false"
+- S3FREE_TRACING_ENDPOINT       // e.g., localhost:4317 (grpc) or localhost:4318 (http)
+- S3FREE_TRACING_PROTOCOL       // "grpc" or "http"
+- S3FREE_TRACING_SAMPLE         // 0.0 - 1.0
+- S3FREE_TRACING_SERVICE        // service.name override
+- S3FREE_GC_ENABLED             // "true"/"false" to enable multipart GC
+- S3FREE_GC_INTERVAL            // e.g., "15m"
+- S3FREE_GC_OLDER_THAN          // e.g., "24h"
+- S3FREE_OIDC_ENABLED           // "true"/"false" to protect Admin API with OIDC
+- S3FREE_OIDC_ISSUER            // issuer URL for discovery (preferred)
+- S3FREE_OIDC_CLIENT_ID         // expected client_id (audience)
+- S3FREE_OIDC_AUDIENCE          // optional, overrides client_id
+- S3FREE_OIDC_JWKS_URL          // direct JWKS URL alternative to issuer
+- S3FREE_OIDC_ALLOW_UNAUTH_HEALTH   // "true"/"false" to allow unauthenticated /admin/health
+- S3FREE_OIDC_ALLOW_UNAUTH_VERSION  // "true"/"false" to allow unauthenticated /admin/version
 </pre>
 
 ## Authentication (optional SigV4)

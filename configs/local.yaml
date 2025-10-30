@@ -35,3 +35,41 @@ tracing:
   sampleRatio: 0.0
   # Optional override for service.name resource attribute
   serviceName: "s3free"
+
+
+# Optional Admin API (read-only endpoints and admin tools)
+# Uncomment to enable a separate admin listener (e.g., for /admin/health, /admin/version, GC endpoint)
+# adminAddress: ":9090"
+
+# Multipart GC (optional)
+# Periodically garbage-collect stale multipart uploads from the internal ".multipart" staging bucket
+# and abort the respective uploads in metadata (best-effort). Disabled by default.
+# Environment overrides:
+#   S3FREE_GC_ENABLED=true
+#   S3FREE_GC_INTERVAL=15m
+#   S3FREE_GC_OLDER_THAN=24h
+gc:
+  enabled: false
+  interval: "15m"
+  olderThan: "24h"
+
+
+# Admin OIDC (optional)
+# Protects the Admin API with OIDC/OAuth2 Bearer tokens. Disabled by default.
+# Configure either issuer+clientID (preferred) or jwksURL+audience.
+# Environment overrides:
+#   S3FREE_OIDC_ENABLED=true
+#   S3FREE_OIDC_ISSUER=https://auth.example.com/realms/dev
+#   S3FREE_OIDC_CLIENT_ID=s3free-admin
+#   S3FREE_OIDC_AUDIENCE=s3free-admin-api        # optional, overrides clientID
+#   S3FREE_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
+#   S3FREE_OIDC_ALLOW_UNAUTH_HEALTH=true         # optional: allow unauthenticated /admin/health
+#   S3FREE_OIDC_ALLOW_UNAUTH_VERSION=true        # optional: allow unauthenticated /admin/version
+oidc:
+  enabled: false
+  issuer: ""
+  clientID: ""
+  audience: ""
+  jwksURL: ""
+  allowUnauthHealth: false
+  allowUnauthVersion: false

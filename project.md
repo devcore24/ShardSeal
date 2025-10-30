@@ -208,7 +208,7 @@ Compaction & GC
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
-## Current Status & Progress (Updated 2025-10-29)
+## Current Status & Progress (Updated 2025-10-30)
 
 ### Completed ✅
 - Project scaffold: modules, Makefile, CI
@@ -241,13 +241,17 @@ Compaction & GC
   - Added constants for S3 error codes and query parameters
   - Documented concurrency safety requirements for Store and ObjectStore interfaces
   - Fixed bucket deletion to exclude .multipart temporary files from empty check
+- Admin API hardening: OIDC authentication with optional exemptions (health/version) and RBAC default policy (admin.read, admin.gc) wired
+- Multipart lifecycle hardening: on-demand GC endpoint and background GC with thresholds; guard bucket delete during active uploads
+- Admin package: factored multipart GC into pkg/admin with reusable RunMultipartGC and NewMultipartGCHandler
+- Tests added: OIDC middleware and RBAC unit tests; admin GC unit tests; go build/test passing
 
 ### Next Up 🚧
-1) Multipart lifecycle hardening: stale-part GC and guarding bucket delete during active uploads
-2) Monitoring documentation and additional dashboards; production Alertmanager integration examples
-3) Admin API hardening: OIDC authentication and RBAC scaffolding (disabled by default)
-4) FreeXL v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
-5) Tracing guidance: sampling defaults and span attributes for storage operations
+1) FreeXL v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
+2) Tracing guidance: sampling defaults and span attributes for storage operations
+3) Monitoring documentation and additional dashboards; production Alertmanager integration examples
+4) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
+5) Distributed metadata/placement: design notes for embedded Raft and consistent hashing ring
 
 ## Development Guide
 

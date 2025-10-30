@@ -16,6 +16,8 @@ import (
 	"s3free/pkg/metadata"
 	"s3free/pkg/obs/metrics"
 	"s3free/pkg/obs/tracing"
+	adminpkg "s3free/pkg/admin"
+	adminoidc "s3free/pkg/security/oidc"
 	"s3free/pkg/security/sigv4"
 	"s3free/pkg/storage"
 )
@@ -140,81 +142,44 @@ func main() {
 			_ = json.NewEncoder(w).Encode(resp)
 		})
 		// POST /admin/gc/multipart?olderThan=24h
-		// Garbage-collect stale multipart uploads by removing staged parts from the internal
-		// staging bucket and aborting the uploads in metadata (best-effort).
-		// Disabled unless AdminAddress is set.
-		adminMux.HandleFunc("/admin/gc/multipart", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
+		// Use shared admin package handler to run a single GC pass (best-effort).
+		adminMux.Handle("/admin/gc/multipart", adminpkg.NewMultipartGCHandler(store, objs))
 
-			olderThan := 24 * time.Hour
-			if qs := r.URL.Query().Get("olderThan"); qs != "" {
-				if d, err := time.ParseDuration(qs); err == nil && d > 0 {
-					olderThan = d
-				}
-			}
-			// keep consistent with s3 package internal constant
-			const stagingBucket = ".multipart"
-			ctx := r.Context()
-
-			uploads, err := store.ListMultipartUploads(ctx, "")
-			if err != nil {
-				http.Error(w, "failed to list uploads: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			type result struct {
-				Scanned int `json:"scanned"`
-				Aborted int `json:"aborted"`
-				Deleted int `json:"deletedParts"`
-			}
-			res := result{}
-			now := time.Now().UTC()
-
-			for _, up := range uploads {
-				res.Scanned++
-				// Skip uploads newer than threshold
-				if now.Sub(up.Initiated) < olderThan {
-					continue
-				}
-				// Delete staged parts under prefix: "<bucket>/<key>/<uploadID>/"
-				prefix := up.Bucket + "/" + up.Key + "/" + up.UploadID + "/"
-				startAfter := ""
-				for {
-					objsList, truncated, err := objs.List(ctx, stagingBucket, prefix, startAfter, 1000)
-					if err != nil {
-						// best-effort: continue with next upload
-						slog.Error("admin gc: list parts", slog.String("uploadId", up.UploadID), slog.String("error", err.Error()))
-						break
-					}
-					if len(objsList) == 0 && !truncated {
-						break
-					}
-					for _, o := range objsList {
-						if derr := objs.Delete(ctx, stagingBucket, o.Key); derr == nil {
-							res.Deleted++
-						} else {
-							slog.Error("admin gc: delete part", slog.String("uploadId", up.UploadID), slog.String("key", o.Key), slog.String("error", derr.Error()))
+						// Optionally protect Admin API with OIDC when enabled
+						adminHandler := http.Handler(adminMux)
+						if cfg.OIDC.Enabled {
+							v, err := adminoidc.NewVerifier(context.Background(), adminoidc.Config{
+								Issuer:   cfg.OIDC.Issuer,
+								ClientID: cfg.OIDC.ClientID,
+								Audience: cfg.OIDC.Audience,
+								JWKSURL:  cfg.OIDC.JWKSURL,
+							})
+							if err != nil {
+								slog.Error("admin oidc init failed", slog.String("error", err.Error()))
+							} else {
+								// Exemptions for health/version if allowed by config (useful for LB/K8s probes)
+								exempt := func(r *http.Request) bool {
+									if cfg.OIDC.AllowUnauthHealth && r.URL.Path == "/admin/health" {
+										return true
+									}
+									if cfg.OIDC.AllowUnauthVersion && r.URL.Path == "/admin/version" {
+										return true
+									}
+									return false
+								}
+								// Compose middleware so that OIDC runs before RBAC (ensuring subject is present for RBAC).
+								adminHandler = adminoidc.RBAC(adminoidc.DefaultAdminPolicy())(adminHandler)
+								adminHandler = adminoidc.Middleware(v, exempt)(adminHandler)
+								slog.Info("admin oidc enabled",
+									slog.Bool("allowUnauthHealth", cfg.OIDC.AllowUnauthHealth),
+									slog.Bool("allowUnauthVersion", cfg.OIDC.AllowUnauthVersion),
+								)
+							}
 						}
-						startAfter = o.Key
-					}
-					if !truncated {
-						break
-					}
-				}
-				// Abort upload in metadata (ignore error if already gone)
-				if err := store.AbortMultipartUpload(ctx, up.UploadID); err == nil {
-					res.Aborted++
-				}
-			}
-			_ = json.NewEncoder(w).Encode(res)
-		})
 
 		adminSrv = &http.Server{
 			Addr:         cfg.AdminAddress,
-			Handler:      adminMux,
+			Handler:      adminHandler,
 			ReadTimeout:  10 * time.Second,
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  30 * time.Second,
@@ -249,42 +214,16 @@ func main() {
 				case <-gcCtx.Done():
 					return
 				case <-ticker.C:
-					uploads, err := store.ListMultipartUploads(context.Background(), "")
+					res, err := adminpkg.RunMultipartGC(context.Background(), store, objs, olderThan)
 					if err != nil {
-						slog.Error("gc: list uploads", slog.String("error", err.Error()))
+						slog.Error("gc: run", slog.String("error", err.Error()))
 						continue
 					}
-					now := time.Now().UTC()
-					for _, up := range uploads {
-						// Skip uploads newer than threshold
-						if now.Sub(up.Initiated) < olderThan {
-							continue
-						}
-						// Delete staged parts under prefix: "<bucket>/<key>/<uploadID>/"
-						prefix := up.Bucket + "/" + up.Key + "/" + up.UploadID + "/"
-						startAfter := ""
-						for {
-							objsList, truncated, lerr := objs.List(context.Background(), stagingBucket, prefix, startAfter, 1000)
-							if lerr != nil {
-								slog.Error("gc: list parts", slog.String("uploadId", up.UploadID), slog.String("error", lerr.Error()))
-								break
-							}
-							if len(objsList) == 0 && !truncated {
-								break
-							}
-							for _, o := range objsList {
-								if derr := objs.Delete(context.Background(), stagingBucket, o.Key); derr != nil {
-									slog.Error("gc: delete part", slog.String("uploadId", up.UploadID), slog.String("key", o.Key), slog.String("error", derr.Error()))
-								}
-								startAfter = o.Key
-							}
-							if !truncated {
-								break
-							}
-						}
-						// Abort upload in metadata (ignore error if already gone)
-						_ = store.AbortMultipartUpload(context.Background(), up.UploadID)
-					}
+					slog.Info("gc: multipart pass",
+						slog.Int("scanned", res.Scanned),
+						slog.Int("aborted", res.Aborted),
+						slog.Int("deleted", res.Deleted),
+					)
 				}
 			}
 		}()

@@ -47,6 +47,7 @@ type Config struct {
 	AccessKeys   []StaticAccessKey `yaml:"accessKeys"`
 	Tracing      TracingConfig     `yaml:"tracing"`
 	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
+	OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -72,6 +73,19 @@ type GCConfig struct {
 	OlderThan string `yaml:"olderThan,omitempty"`  // e.g., "24h"
 }
 
+ // OIDCConfig configures Admin API OIDC verification (disabled by default).
+type OIDCConfig struct {
+	Enabled            bool   `yaml:"enabled"`
+	Issuer             string `yaml:"issuer,omitempty"`
+	ClientID           string `yaml:"clientID,omitempty"`
+	Audience           string `yaml:"audience,omitempty"`
+	JWKSURL            string `yaml:"jwksURL,omitempty"`
+	// When OIDC is enabled, optionally allow unauthenticated access to selected admin endpoints.
+	// Useful for k8s/lb health checks without distributing tokens to probes.
+	AllowUnauthHealth  bool   `yaml:"allowUnauthHealth,omitempty"`
+	AllowUnauthVersion bool   `yaml:"allowUnauthVersion,omitempty"`
+}
+
 
 // Default returns a Config with safe, local defaults.
 func Default() Config {
@@ -90,6 +104,15 @@ func Default() Config {
 			Enabled:   false,
 			Interval:  "15m",
 			OlderThan: "24h",
+		},
+		OIDC: OIDCConfig{
+			Enabled:            false,
+			Issuer:             "",
+			ClientID:           "",
+			Audience:           "",
+			JWKSURL:            "",
+			AllowUnauthHealth:  false,
+			AllowUnauthVersion: false,
 		},
 	}
 }
@@ -215,6 +238,45 @@ func applyEnvOverrides(cfg Config) Config {
 	}
 	if v := os.Getenv("S3FREE_GC_OLDER_THAN"); v != "" {
 		cfg.GC.OlderThan = strings.TrimSpace(v)
+	}
+
+	// Admin OIDC overrides
+	if v := os.Getenv("S3FREE_OIDC_ENABLED"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.OIDC.Enabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.OIDC.Enabled = false
+		}
+	}
+	if v := os.Getenv("S3FREE_OIDC_ISSUER"); v != "" {
+		cfg.OIDC.Issuer = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("S3FREE_OIDC_CLIENT_ID"); v != "" {
+		cfg.OIDC.ClientID = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("S3FREE_OIDC_AUDIENCE"); v != "" {
+		cfg.OIDC.Audience = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("S3FREE_OIDC_JWKS_URL"); v != "" {
+		cfg.OIDC.JWKSURL = strings.TrimSpace(v)
+	}
+	// OIDC exemptions for admin endpoints (optional)
+	if v := os.Getenv("S3FREE_OIDC_ALLOW_UNAUTH_HEALTH"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.OIDC.AllowUnauthHealth = true
+		case "0", "false", "no", "n", "off":
+			cfg.OIDC.AllowUnauthHealth = false
+		}
+	}
+	if v := os.Getenv("S3FREE_OIDC_ALLOW_UNAUTH_VERSION"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.OIDC.AllowUnauthVersion = true
+		case "0", "false", "no", "n", "off":
+			cfg.OIDC.AllowUnauthVersion = false
+		}
 	}
 
 	return cfg
