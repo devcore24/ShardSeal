@@ -525,7 +525,42 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
 
 - Logging and Tracing
   - Logs: centralize with Loki or ELK; include request IDs and subject identities for admin actions
-  - Tracing: add OpenTelemetry later; correlate Admin API actions with background operations (rebalance/scrub/replicate)
+  - Tracing (OpenTelemetry):
+    - Status
+      - Tracing is wired and optional; see [tracing.Init](pkg/obs/tracing/tracing.go) and middleware in [main.main](cmd/s3free/main.go).
+      - Enabled via config/env; exporter supports OTLP gRPC or HTTP.
+      - HTTP server spans are created for data plane requests with common HTTP attributes.
+    - Recommended defaults
+      - Production: ParentBased(TraceIDRatioBased) sampling between 0.05–0.10 to balance cost vs. utility.
+      - Staging: 0.10–0.25 for richer diagnostics during feature rollout.
+      - Development: 1.0 (AlwaysSample) while actively debugging; disable when not needed.
+      - Exporter: OTLP to a collector gateway (gRPC preferred). Use TLS unless running locally.
+    - Suggested attributes and events
+      - Data plane (HTTP middleware already records method, route, status, peer IP, UA, duration):
+        - s3.bucket_present (bool) rather than bucket name to avoid high cardinality
+        - s3.key_hash (short hash of key) to correlate without leaking key values
+        - s3.op ("PutObject","GetObject","ListObjectsV2","CompleteMultipartUpload", etc.)
+        - s3.range (if Range header present, e.g., "bytes=0-1023")
+        - s3.error (bool) and s3.error_code (S3 error code) on failures
+      - Storage operations (future spans; avoid high-cardinality values):
+        - storage.op ("put","get","head","delete","list")
+        - storage.bucket (optional; consider toggling on/off)
+        - storage.bytes (int) and storage.result ("ok","error")
+        - storage.seekable (bool) for GET
+        - errors/warnings as span events (e.g., fs errors, partial retries)
+      - Admin flows:
+        - admin.action ("gc.multipart.run","gc.multipart.abort","health","version")
+        - admin.result and counters (scanned/aborted/deleted for GC) as attributes
+    - Propagation and context
+      - Ensure trace context flows from data plane to background operations when initiated by requests (e.g., admin-triggered GC).
+      - For periodic GC, start a new root span per cycle with clear attributes and sampling controls.
+    - Cardinality guidance
+      - Never record raw object keys or request IDs as high-cardinality labels/attributes.
+      - Prefer booleans, enums, and hashed representations; use recording rules in metrics for top-N analyses.
+    - Operations guidance
+      - Start with 10% sampling; raise temporarily during incidents.
+      - Tag environments (env=dev/staging/prod) and service.name to segment traces.
+      - Correlate Admin API spans with data plane spans via consistent trace context.
 
 - Metric Cardinality Guidelines
   - Avoid high-cardinality labels (object key, request ID, IP). Prefer bounded labels (method, code, tenant).

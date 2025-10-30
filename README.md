@@ -143,6 +143,14 @@ dataDirs:
 #   sampleRatio: 0.0            # 0.0-1.0
 #   serviceName: "s3free"
 ```
+
+Additional optional request size limits:
+```yaml
+# Request size limits (optional)
+limits:
+  singlePutMaxBytes: 5368709120    # 5 GiB cap for single PUT
+  minMultipartPartSize: 5242880    # 5 MiB minimum for non-final multipart parts
+```
 <pre>
 Environment overrides:
 - S3FREE_CONFIG                 // path to YAML config
@@ -166,6 +174,8 @@ Environment overrides:
 - S3FREE_OIDC_JWKS_URL          // direct JWKS URL alternative to issuer
 - S3FREE_OIDC_ALLOW_UNAUTH_HEALTH   // "true"/"false" to allow unauthenticated /admin/health
 - S3FREE_OIDC_ALLOW_UNAUTH_VERSION  // "true"/"false" to allow unauthenticated /admin/version
+- S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES     // e.g., 5368709120 (5 GiB)
+- S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE  // e.g., 5242880 (5 MiB)
 </pre>
 
 ## Authentication (optional SigV4)
@@ -184,8 +194,9 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Objects stored under ./data/objects/{bucket}/{key}
 - Multipart temporary parts stored in separate staging bucket: .multipart/<bucket>/<object-key>/<uploadId>/part.N (excluded from user listings and bucket empty checks; cleaned up on complete/abort)
 - Range requests require seekable storage (LocalFS supports this)
-- Single PUT size cap: 5 GiB. Larger uploads must use Multipart Upload (responds with S3 error code EntityTooLarge).
-- Multipart part size: 5 MiB minimum for all parts except the final part (responds with EntityTooSmall when enforced). Intended for S3 compatibility; very small multi-part aggregates used in tests may bypass this check.
+- Single PUT size cap: 5 GiB (configurable via limits.singlePutMaxBytes or env S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES). Larger uploads must use Multipart Upload (responds with S3 error code EntityTooLarge).
+- Error detail: EntityTooLarge responses include MaxAllowedSize and a hint to use Multipart Upload.
+- Multipart part size: 5 MiB minimum for all parts except the final part (configurable via limits.minMultipartPartSize or env S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE). Intended for S3 compatibility; very small multi-part aggregates used in tests may bypass this check.
 - LocalFS writes are atomic via temp+rename on Put, reducing risk of partial files on error.
 
 ## Recent Improvements (2025-10-29)

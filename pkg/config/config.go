@@ -48,6 +48,7 @@ type Config struct {
 	Tracing      TracingConfig     `yaml:"tracing"`
 	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
 	OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
+	Limits       LimitsConfig      `yaml:"limits"`              // S3 request size limits
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -85,8 +86,15 @@ type OIDCConfig struct {
 	AllowUnauthHealth  bool   `yaml:"allowUnauthHealth,omitempty"`
 	AllowUnauthVersion bool   `yaml:"allowUnauthVersion,omitempty"`
 }
-
-
+ 
+ 
+// LimitsConfig controls S3 request size limits (bytes).
+// Zero or missing values fall back to built-in defaults.
+type LimitsConfig struct {
+	SinglePutMaxBytes    int64 `yaml:"singlePutMaxBytes"`     // e.g., 5368709120 (5 GiB)
+	MinMultipartPartSize int64 `yaml:"minMultipartPartSize"`  // e.g., 5242880 (5 MiB)
+}
+ 
 // Default returns a Config with safe, local defaults.
 func Default() Config {
 	return Config{
@@ -113,6 +121,10 @@ func Default() Config {
 			JWKSURL:            "",
 			AllowUnauthHealth:  false,
 			AllowUnauthVersion: false,
+		},
+		Limits: LimitsConfig{
+			SinglePutMaxBytes:    5 * 1024 * 1024 * 1024, // 5 GiB
+			MinMultipartPartSize: 5 * 1024 * 1024,        // 5 MiB
 		},
 	}
 }
@@ -276,6 +288,18 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.OIDC.AllowUnauthVersion = true
 		case "0", "false", "no", "n", "off":
 			cfg.OIDC.AllowUnauthVersion = false
+		}
+	}
+
+	// Size limits overrides (bytes)
+	if v := os.Getenv("S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES"); v != "" {
+		if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
+			cfg.Limits.SinglePutMaxBytes = x
+		}
+	}
+	if v := os.Getenv("S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE"); v != "" {
+		if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
+			cfg.Limits.MinMultipartPartSize = x
 		}
 	}
 

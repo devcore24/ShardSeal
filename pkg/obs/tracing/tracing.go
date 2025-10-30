@@ -153,6 +153,9 @@ func Middleware(next http.Handler) http.Handler {
 		elapsed := time.Since(start)
 
 		// Minimal common HTTP attributes (avoid semconv dependency).
+		op, bucketPresent, isAdmin := classifyOp(r)
+		hasError := rec.status >= 400
+
 		span.SetAttributes(
 			attribute.String("http.method", r.Method),
 			attribute.String("http.target", r.URL.RequestURI()),
@@ -161,6 +164,11 @@ func Middleware(next http.Handler) http.Handler {
 			attribute.String("net.peer.ip", clientIP(r)),
 			attribute.String("user_agent.original", r.UserAgent()),
 			attribute.Int64("http.server_duration_ms", elapsed.Milliseconds()),
+			// Low-cardinality S3/app attributes
+			attribute.String("s3.op", op),
+			attribute.Bool("s3.bucket_present", bucketPresent),
+			attribute.Bool("s3.admin", isAdmin),
+			attribute.Bool("s3.error", hasError),
 		)
 	})
 }
@@ -201,6 +209,87 @@ func stripScheme(endpoint string) string {
 		return strings.TrimPrefix(e, "https://")
 	}
 	return e
+}
+
+// classifyOp derives a coarse s3 operation name and flags without introducing high cardinality.
+// It inspects method, path shape, and a few S3 query params (uploads, uploadId, partNumber).
+func classifyOp(r *http.Request) (op string, bucketPresent bool, isAdmin bool) {
+	path := r.URL.Path
+	q := r.URL.Query()
+
+	// Admin detection
+	if strings.HasPrefix(path, "/admin/") {
+		return "admin:" + r.Method, false, true
+	}
+
+	// Root
+	if path == "/" {
+		if r.Method == http.MethodGet {
+			return "ListBuckets", false, false
+		}
+		return r.Method + " /", false, false
+	}
+
+	// Bucket/object parsing
+	p := strings.TrimPrefix(path, "/")
+	parts := strings.SplitN(p, "/", 2)
+	bucketPresent = parts[0] != ""
+
+	// Multipart query checks
+	uploadID := q.Get("uploadId")
+	_, hasUploads := q["uploads"]
+	partNumber := q.Get("partNumber")
+
+	if uploadID != "" {
+		switch r.Method {
+		case http.MethodPost:
+			return "CompleteMultipartUpload", bucketPresent, false
+		case http.MethodDelete:
+			return "AbortMultipartUpload", bucketPresent, false
+		case http.MethodPut:
+			if partNumber != "" {
+				return "UploadPart", bucketPresent, false
+			}
+		}
+	}
+	if hasUploads && r.Method == http.MethodPost {
+		return "InitiateMultipartUpload", bucketPresent, false
+	}
+
+	// Bucket-level vs object-level
+	keyPresent := len(parts) == 2 && parts[1] != ""
+	if !keyPresent {
+		switch r.Method {
+		case http.MethodGet:
+			if q.Get("list-type") == "2" {
+				return "ListObjectsV2", bucketPresent, false
+			}
+			return "Bucket:Get", bucketPresent, false
+		case http.MethodPut:
+			return "CreateBucket", bucketPresent, false
+		case http.MethodDelete:
+			return "DeleteBucket", bucketPresent, false
+		default:
+			return "Bucket:" + r.Method, bucketPresent, false
+		}
+	}
+
+	// Object-level ops
+	switch r.Method {
+	case http.MethodPut:
+		return "PutObject", bucketPresent, false
+	case http.MethodGet:
+		if r.Header.Get("Range") != "" {
+			return "GetObject:Range", bucketPresent, false
+		}
+		return "GetObject", bucketPresent, false
+	case http.MethodHead:
+		return "HeadObject", bucketPresent, false
+	case http.MethodDelete:
+		return "DeleteObject", bucketPresent, false
+	default:
+		return "Object:" + r.Method, bucketPresent, false
+	}
 }
 
 // clientIP extracts a best-effort client IP from request.

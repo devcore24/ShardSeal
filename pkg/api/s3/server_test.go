@@ -778,3 +778,107 @@ func trimSpacesForTest(s string) string {
 	}
 	return b.String()
 }
+
+
+// --- Size limit integration tests ---
+
+func TestSizeLimit_SinglePut_EntityTooLarge(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+
+	// Set a very small single PUT cap to trigger EntityTooLarge
+	s := NewWithLimits(meta, objs, Limits{
+		SinglePutMaxBytes:    3,  // bytes
+		MinMultipartPartSize: 5,  // default irrelevant here
+	})
+	hs := s.Handler()
+
+	body := "1234567890" // 10 bytes
+	r := httptest.NewRequest(http.MethodPut, "/bkt/big.bin", bytes.NewBufferString(body))
+	r.Header.Set("Content-Length", "10")
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for EntityTooLarge, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := w.Body.String()
+	if !strings.Contains(resp, "<Code>EntityTooLarge</Code>") {
+		t.Fatalf("expected S3 error code EntityTooLarge, got: %s", resp)
+	}
+	max := extractSingleXMLTag(resp, "MaxAllowedSize")
+	if max != "3" {
+		t.Fatalf("expected MaxAllowedSize=3, got %q", max)
+	}
+	hint := extractSingleXMLTag(resp, "Hint")
+	if hint == "" {
+		t.Fatalf("expected Hint element present, got: %s", resp)
+	}
+}
+
+func TestMultipart_MinPartSize_EntityTooSmall(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+
+	// Configure a very small min part size (5 bytes) so our small fixture can trigger the rule.
+	s := NewWithLimits(meta, objs, Limits{
+		SinglePutMaxBytes:    1024, // not used here
+		MinMultipartPartSize: 5,    // bytes
+	})
+	hs := s.Handler()
+
+	// 1) Initiate multipart upload
+	r := httptest.NewRequest(http.MethodPost, "/bkt/obj.bin?uploads", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initiate multipart expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	uploadID := extractSingleXMLTag(w.Body.String(), "UploadId")
+	if uploadID == "" {
+		t.Fatalf("missing UploadId in initiate response")
+	}
+
+	// 2) Upload part 1 too small (1 byte)
+	r = httptest.NewRequest(http.MethodPut, "/bkt/obj.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString("a"))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload part 1 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	etag1 := strings.Trim(w.Header().Get("ETag"), "\"")
+
+	// 3) Upload part 2 (final) >= min (5 bytes)
+	r = httptest.NewRequest(http.MethodPut, "/bkt/obj.bin?uploadId="+uploadID+"&partNumber=2", bytes.NewBufferString("bcdef"))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload part 2 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	etag2 := strings.Trim(w.Header().Get("ETag"), "\"")
+
+	// 4) Complete (should fail because non-final part 1 is below min when total >= min)
+	completeXML := `<CompleteMultipartUpload>
+		<Part><PartNumber>1</PartNumber><ETag>"` + etag1 + `"</ETag></Part>
+		<Part><PartNumber>2</PartNumber><ETag>"` + etag2 + `"</ETag></Part>
+	</CompleteMultipartUpload>`
+	r = httptest.NewRequest(http.MethodPost, "/bkt/obj.bin?uploadId="+uploadID, bytes.NewBufferString(completeXML))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("complete expected 400 due to EntityTooSmall, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := w.Body.String()
+	if !strings.Contains(resp, "<Code>EntityTooSmall</Code>") {
+		t.Fatalf("expected S3 error code EntityTooSmall, got: %s", resp)
+	}
+}

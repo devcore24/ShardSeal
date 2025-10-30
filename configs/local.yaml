@@ -73,3 +73,13 @@ oidc:
   jwksURL: ""
   allowUnauthHealth: false
   allowUnauthVersion: false
+
+
+# Request size limits (optional)
+# Configure S3 request size limits in bytes. Zero or missing values use defaults.
+# Environment overrides:
+#   S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES=5368709120
+#   S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE=5242880
+limits:
+  singlePutMaxBytes: 5368709120    # 5 GiB cap for single PUT
+  minMultipartPartSize: 5242880    # 5 MiB minimum for non-final multipart parts

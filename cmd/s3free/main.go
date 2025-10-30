@@ -78,7 +78,10 @@ func main() {
 	// Wire storage metrics observer
 	objs.SetObserver(sm)
 
-	api := s3.New(store, objs)
+	api := s3.NewWithLimits(store, objs, s3.Limits{
+		SinglePutMaxBytes:    cfg.Limits.SinglePutMaxBytes,
+		MinMultipartPartSize: cfg.Limits.MinMultipartPartSize,
+	})
 
 	handler := api.Handler()
 	if cfg.AuthMode == "sigv4" {

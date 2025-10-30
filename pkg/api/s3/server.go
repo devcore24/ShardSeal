@@ -88,8 +88,9 @@ return n, nil
 // Server routes S3 requests. In early stages, it returns stubs for key APIs.
 // Dependencies are injected for testability and future distribution.
 type Server struct{
-	store metadata.Store
-	objs  objectStore
+	store  metadata.Store
+	objs   objectStore
+	limits Limits
 }
 
 type objectStore interface {
@@ -102,8 +103,29 @@ type objectStore interface {
 	RemoveBucket(ctx context.Context, bucket string) error
 }
 
-// New returns a new S3 API server with dependencies.
-func New(store metadata.Store, objs objectStore) *Server { return &Server{store: store, objs: objs} }
+// Limits configures request size limits for the S3 API.
+// Zero values fall back to built-in defaults (singlePutMaxBytes, minMultipartPartSize).
+type Limits struct {
+	SinglePutMaxBytes    int64
+	MinMultipartPartSize int64
+}
+
+// New returns a new S3 API server with dependencies (uses default limits).
+func New(store metadata.Store, objs objectStore) *Server {
+return NewWithLimits(store, objs, Limits{})
+}
+
+// NewWithLimits returns a new S3 API server with custom runtime limits.
+// If limits fields are zero, sensible defaults are applied (5 GiB single PUT cap, 5 MiB min part size).
+func NewWithLimits(store metadata.Store, objs objectStore, limits Limits) *Server {
+if limits.SinglePutMaxBytes <= 0 {
+	limits.SinglePutMaxBytes = singlePutMaxBytes
+}
+if limits.MinMultipartPartSize <= 0 {
+	limits.MinMultipartPartSize = minMultipartPartSize
+}
+return &Server{store: store, objs: objs, limits: limits}
+}
 
 // Handler returns an http.Handler for S3 routes.
 func (s *Server) Handler() http.Handler {
@@ -188,18 +210,23 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 			writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+bucket, "")
 			return
 		}
+		// Determine single PUT cap (limits override defaults when provided)
+		maxSingle := s.limits.SinglePutMaxBytes
+		if maxSingle <= 0 {
+			maxSingle = singlePutMaxBytes
+		}
 		// If Content-Length is present and exceeds cap, reject early.
 		if cl := r.Header.Get("Content-Length"); cl != "" {
-			if v, err := strconv.ParseInt(cl, 10, 64); err == nil && v > singlePutMaxBytes {
-				writeError(w, http.StatusBadRequest, errCodeEntityTooLarge, "Object size exceeds single PUT limit; use Multipart Upload.", r.URL.Path, "")
+			if v, err := strconv.ParseInt(cl, 10, 64); err == nil && v > maxSingle {
+				writeEntityTooLarge(w, r.URL.Path, maxSingle)
 				return
 			}
 		}
-		reader := &capReader{r: r.Body, max: singlePutMaxBytes}
+		reader := &capReader{r: r.Body, max: maxSingle}
 		etag, _, err := s.objs.Put(r.Context(), bucket, key, reader)
 		if err != nil {
 			if errors.Is(err, errTooLarge) {
-				writeError(w, http.StatusBadRequest, errCodeEntityTooLarge, "Object size exceeds single PUT limit; use Multipart Upload.", r.URL.Path, "")
+				writeEntityTooLarge(w, r.URL.Path, maxSingle)
 				return
 			}
 			writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
@@ -395,17 +422,32 @@ func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, name
 
 // S3 error response encoding (minimal)
 type s3Error struct {
-	XMLName   xml.Name `xml:"Error"`
-	Code      string   `xml:"Code"`
-	Message   string   `xml:"Message"`
-	Resource  string   `xml:"Resource"`
-	RequestID string   `xml:"RequestId"`
+	XMLName       xml.Name `xml:"Error"`
+	Code          string   `xml:"Code"`
+	Message       string   `xml:"Message"`
+	Resource      string   `xml:"Resource"`
+	RequestID     string   `xml:"RequestId"`
+	MaxAllowedSize int64   `xml:"MaxAllowedSize,omitempty"`
+	Hint          string   `xml:"Hint,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, code, message, resource, reqID string) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 	_ = xml.NewEncoder(w).Encode(s3Error{Code: code, Message: message, Resource: resource, RequestID: reqID})
+}
+
+// writeEntityTooLarge emits an EntityTooLarge error with MaxAllowedSize and a hint to use Multipart Upload.
+func writeEntityTooLarge(w http.ResponseWriter, resource string, max int64) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = xml.NewEncoder(w).Encode(s3Error{
+		Code:           errCodeEntityTooLarge,
+		Message:        "Object size exceeds single PUT limit; use Multipart Upload.",
+		Resource:       resource,
+		MaxAllowedSize: max,
+		Hint:           "Use Multipart Upload",
+	})
 }
 
 // Minimal bucket name validation per S3 guidelines (simplified):
@@ -656,7 +698,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 					totalSize += part.Size
 				}
 			}
-			if totalSize >= minMultipartPartSize {
+			if totalSize >= s.limits.MinMultipartPartSize {
 				lastNum := 0
 				for _, p := range req.Parts {
 					if p.PartNumber > lastNum {
@@ -668,7 +710,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 						continue // last part may be smaller
 					}
 					part := upload.Parts[p.PartNumber]
-					if part.Size < minMultipartPartSize {
+					if part.Size < s.limits.MinMultipartPartSize {
 						writeError(w, http.StatusBadRequest, errCodeEntityTooSmall, "Each part except the last must be at least 5 MiB.", r.URL.Path, "")
 						return
 					}
