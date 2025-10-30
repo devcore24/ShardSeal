@@ -13,8 +13,8 @@ import (
 // ManifestFilename is the filename used to persist object manifests alongside data.
 const ManifestFilename = "object.meta"
 
-// ManifestFormatV1 identifies the v1 JSON encoding format for manifests (FreeXL v1).
-const ManifestFormatV1 = "FreeXLv1"
+ // ManifestFormatV1 identifies the v1 JSON encoding format for manifests (ShardSeal v1).
+const ManifestFormatV1 = "ShardSealv1"
 
 // RSParams describes Reed–Solomon parameters for an object.
 type RSParams struct {
@@ -41,7 +41,7 @@ type IntegrityInfo struct {
 // Manifest is the persisted description of an object, its layout, and integrity metadata.
 // Format is JSON (v1). Later versions may switch to Protobuf; version is recorded in Version field.
 type Manifest struct {
-	Version      string        `json:"version"` // "FreeXLv1"
+	Version      string        `json:"version"` // "ShardSealv1"
 	Bucket       string        `json:"bucket"`
 	Key          string        `json:"key"`
 	Size         int64         `json:"size"`

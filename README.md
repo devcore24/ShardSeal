@@ -1,5 +1,5 @@
 
-<img src="img/s3free.png" width="260">
+<img src="img/shardSeal_280x280.png" width="280">
 
 # ShardSeal
 
@@ -31,12 +31,12 @@
 ```bash
 make build
 # Run with sample config (will ensure ./data exists)
-S3FREE_CONFIG=configs/local.yaml make run
+SHARDSEAL_CONFIG=configs/local.yaml make run
 # Or
 # go run ./cmd/shardseal
 ```
 
-Default address: :8080 (override with env S3FREE_ADDR). Data dirs: ./data (override with env S3FREE_DATA_DIRS as comma-separated list).
+Default address: :8080 (override with env SHARDSEAL_ADDR). Data dirs: ./data (override with env SHARDSEAL_DATA_DIRS as comma-separated list).
 
 ### Using with curl (auth disabled by default; SigV4 optional)
 Bucket naming: 3-63 chars; lowercase letters, digits, dots, hyphens; must start/end with letter or digit.
@@ -83,9 +83,9 @@ go test ./pkg/api/s3 -v
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
 - Default counters and histograms:
-  - s3free_http_requests_total{method,code}
-  - s3free_http_request_duration_seconds_bucket/sum/count{method,code}
-  - s3free_http_inflight_requests
+  - shardseal_http_requests_total{method,code}
+  - shardseal_http_request_duration_seconds_bucket/sum/count{method,code}
+  - shardseal_http_inflight_requests
 - Example:
 ```bash
 curl -s http://localhost:8080/metrics | head -n 20
@@ -99,20 +99,26 @@ curl -s http://localhost:8080/metrics | head -n 20
 ## Monitoring (Prometheus + Grafana)
 - Prometheus sample config: configs/monitoring/prometheus/prometheus.yml
 - Example alert rules: configs/monitoring/prometheus/rules.yml
-- Grafana dashboard (import JSON): configs/monitoring/grafana/s3free_overview.json
+- Grafana dashboard (import JSON): configs/monitoring/grafana/shardseal_overview.json
 
 Quick start:
 ```bash
 # 1) Run shardseal (default :8080 exposes /metrics)
-S3FREE_CONFIG=configs/local.yaml make run
+SHARDSEAL_CONFIG=configs/local.yaml make run
 
 # 2) Start Prometheus (adjust path as needed)
 prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
 
 # 3) Import Grafana dashboard JSON:
-#    configs/monitoring/grafana/s3free_overview.json
+#    configs/monitoring/grafana/shardseal_overview.json
 #    and set the Prometheus datasource accordingly.
 ```
+
+Tracing and S3 error headers
+- Server spans include: http.method, http.target, http.route, http.status_code, user_agent.original, net.peer.ip, http.server_duration_ms.
+- S3 attributes (low cardinality): s3.op, s3.bucket_present, s3.admin, s3.error. New: s3.error_code on failures; optional s3.key_hash when enabled.
+- Enable s3.key_hash via environment: SHARDSEAL_TRACING_KEY_HASH=true. The key hash is sha256(key) truncated to 8 bytes (16 hex chars).
+- Error responses include the header X-S3-Error-Code mirroring the S3 error code for observability. This header is only set on error responses.
 
 Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart.
 - /admin/health: JSON status with ready/version/addresses
@@ -141,7 +147,7 @@ dataDirs:
 #   endpoint: "localhost:4317"  # grpc default; or "localhost:4318" for http
 #   protocol: "grpc"            # "grpc" or "http"
 #   sampleRatio: 0.0            # 0.0-1.0
-#   serviceName: "s3free"
+#   serviceName: "shardseal"
 ```
 
 Additional optional request size limits:
@@ -153,38 +159,39 @@ limits:
 ```
 <pre>
 Environment overrides:
-- S3FREE_CONFIG                 // path to YAML config
-- S3FREE_ADDR                   // data-plane listen address (e.g., 0.0.0.0:8080)
-- S3FREE_ADMIN_ADDR             // admin-plane listen address (e.g., 0.0.0.0:9090) to enable admin endpoints
-- S3FREE_DATA_DIRS              // comma-separated data directories
-- S3FREE_AUTH_MODE              // "none" (default) or "sigv4"
-- S3FREE_ACCESS_KEYS            // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
-- S3FREE_TRACING_ENABLED        // "true"/"false"
-- S3FREE_TRACING_ENDPOINT       // e.g., localhost:4317 (grpc) or localhost:4318 (http)
-- S3FREE_TRACING_PROTOCOL       // "grpc" or "http"
-- S3FREE_TRACING_SAMPLE         // 0.0 - 1.0
-- S3FREE_TRACING_SERVICE        // service.name override
-- S3FREE_GC_ENABLED             // "true"/"false" to enable multipart GC
-- S3FREE_GC_INTERVAL            // e.g., "15m"
-- S3FREE_GC_OLDER_THAN          // e.g., "24h"
-- S3FREE_OIDC_ENABLED           // "true"/"false" to protect Admin API with OIDC
-- S3FREE_OIDC_ISSUER            // issuer URL for discovery (preferred)
-- S3FREE_OIDC_CLIENT_ID         // expected client_id (audience)
-- S3FREE_OIDC_AUDIENCE          // optional, overrides client_id
-- S3FREE_OIDC_JWKS_URL          // direct JWKS URL alternative to issuer
-- S3FREE_OIDC_ALLOW_UNAUTH_HEALTH   // "true"/"false" to allow unauthenticated /admin/health
-- S3FREE_OIDC_ALLOW_UNAUTH_VERSION  // "true"/"false" to allow unauthenticated /admin/version
-- S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES     // e.g., 5368709120 (5 GiB)
-- S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE  // e.g., 5242880 (5 MiB)
+- SHARDSEAL_CONFIG                 // path to YAML config
+- SHARDSEAL_ADDR                   // data-plane listen address (e.g., 0.0.0.0:8080)
+- SHARDSEAL_ADMIN_ADDR             // admin-plane listen address (e.g., 0.0.0.0:9090) to enable admin endpoints
+- SHARDSEAL_DATA_DIRS              // comma-separated data directories
+- SHARDSEAL_AUTH_MODE              // "none" (default) or "sigv4"
+- SHARDSEAL_ACCESS_KEYS            // comma-separated ACCESS_KEY:SECRET_KEY[:USER]
+- SHARDSEAL_TRACING_ENABLED        // "true"/"false"
+- SHARDSEAL_TRACING_ENDPOINT       // e.g., localhost:4317 (grpc) or localhost:4318 (http)
+- SHARDSEAL_TRACING_PROTOCOL       // "grpc" or "http"
+- SHARDSEAL_TRACING_SAMPLE         // 0.0 - 1.0
+- SHARDSEAL_TRACING_SERVICE        // service.name override
+- SHARDSEAL_TRACING_KEY_HASH       // "true"/"false"; when true, emit s3.key_hash (sha256 first 8 bytes hex of object key)
+- SHARDSEAL_GC_ENABLED             // "true"/"false" to enable multipart GC
+- SHARDSEAL_GC_INTERVAL            // e.g., "15m"
+- SHARDSEAL_GC_OLDER_THAN          // e.g., "24h"
+- SHARDSEAL_OIDC_ENABLED           // "true"/"false" to protect Admin API with OIDC
+- SHARDSEAL_OIDC_ISSUER            // issuer URL for discovery (preferred)
+- SHARDSEAL_OIDC_CLIENT_ID         // expected client_id (audience)
+- SHARDSEAL_OIDC_AUDIENCE          // optional, overrides client_id
+- SHARDSEAL_OIDC_JWKS_URL          // direct JWKS URL alternative to issuer
+- SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH   // "true"/"false" to allow unauthenticated /admin/health
+- SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION  // "true"/"false" to allow unauthenticated /admin/version
+- SHARDSEAL_LIMIT_SINGLE_PUT_MAX_BYTES     // e.g., 5368709120 (5 GiB)
+- SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE  // e.g., 5242880 (5 MiB)
 </pre>
 
 ## Authentication (optional SigV4)
 - Disabled by default. Enable verification and provide credentials either via config or environment:
 ```bash
-export S3FREE_AUTH_MODE=sigv4
-export S3FREE_ACCESS_KEYS='AKIAEXAMPLE:secret:local'
+export SHARDSEAL_AUTH_MODE=sigv4
+export SHARDSEAL_ACCESS_KEYS='AKIAEXAMPLE:secret:local'
 # Run server after setting env
-S3FREE_CONFIG=configs/local.yaml make run
+SHARDSEAL_CONFIG=configs/local.yaml make run
 ```
 When enabled, the server requires valid AWS Signature V4 on S3 requests (both Authorization header and presigned URLs are supported). Health endpoints (/livez, /readyz, /metrics) remain unauthenticated.
 
@@ -194,9 +201,9 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Objects stored under ./data/objects/{bucket}/{key}
 - Multipart temporary parts stored in separate staging bucket: .multipart/<bucket>/<object-key>/<uploadId>/part.N (excluded from user listings and bucket empty checks; cleaned up on complete/abort)
 - Range requests require seekable storage (LocalFS supports this)
-- Single PUT size cap: 5 GiB (configurable via limits.singlePutMaxBytes or env S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES). Larger uploads must use Multipart Upload (responds with S3 error code EntityTooLarge).
+- Single PUT size cap: 5 GiB (configurable via limits.singlePutMaxBytes or env SHARDSEAL_LIMIT_SINGLE_PUT_MAX_BYTES). Larger uploads must use Multipart Upload (responds with S3 error code EntityTooLarge).
 - Error detail: EntityTooLarge responses include MaxAllowedSize and a hint to use Multipart Upload.
-- Multipart part size: 5 MiB minimum for all parts except the final part (configurable via limits.minMultipartPartSize or env S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE). Intended for S3 compatibility; very small multi-part aggregates used in tests may bypass this check.
+- Multipart part size: 5 MiB minimum for all parts except the final part (configurable via limits.minMultipartPartSize or env SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE). Intended for S3 compatibility; very small multi-part aggregates used in tests may bypass this check.
 - LocalFS writes are atomic via temp+rename on Put, reducing risk of partial files on error.
 
 ## Recent Improvements (2025-10-29)

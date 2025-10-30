@@ -25,12 +25,12 @@ import (
 //       user: "local"
 //
 // Environment overrides:
-//   S3FREE_ADDR overrides Address when set.
-//   S3FREE_DATA_DIRS overrides DataDirs (comma-separated).
-//   S3FREE_AUTH_MODE overrides AuthMode ("none" or "sigv4").
-//   S3FREE_ACCESS_KEYS appends/overrides AccessKeys as comma-separated entries in form:
+//   SHARDSEAL_ADDR overrides Address when set.
+//   SHARDSEAL_DATA_DIRS overrides DataDirs (comma-separated).
+//   SHARDSEAL_AUTH_MODE overrides AuthMode ("none" or "sigv4").
+//   SHARDSEAL_ACCESS_KEYS appends/overrides AccessKeys as comma-separated entries in form:
 //     ACCESS_KEY:SECRET_KEY[:USER], e.g. "AKIA1:SECRET1:alice,AKIA2:SECRET2:bob"
-//   S3FREE_CONFIG path to YAML config file; if empty, loader tries ./config.yaml then defaults.
+//   SHARDSEAL_CONFIG path to YAML config file; if empty, loader tries ./config.yaml then defaults.
 //
 // Backward-compatible defaults should be maintained across versions.
 // Avoid silently changing default directories.
@@ -176,17 +176,17 @@ func EnsureDirs(cfg Config) error {
 }
 
 func applyEnvOverrides(cfg Config) Config {
-	if v := os.Getenv("S3FREE_ADDR"); v != "" {
+	if v := os.Getenv("SHARDSEAL_ADDR"); v != "" {
 		cfg.Address = v
 	}
-	if v := os.Getenv("S3FREE_ADMIN_ADDR"); v != "" {
+	if v := os.Getenv("SHARDSEAL_ADMIN_ADDR"); v != "" {
 		cfg.AdminAddress = v
 	}
-	if v := os.Getenv("S3FREE_DATA_DIRS"); v != "" {
+	if v := os.Getenv("SHARDSEAL_DATA_DIRS"); v != "" {
 		// Comma-separated list
 		cfg.DataDirs = splitAndTrim(v)
 	}
-	if v := os.Getenv("S3FREE_AUTH_MODE"); v != "" {
+	if v := os.Getenv("SHARDSEAL_AUTH_MODE"); v != "" {
 		mode := strings.ToLower(strings.TrimSpace(v))
 		switch mode {
 		case "none", "sigv4":
@@ -195,7 +195,7 @@ func applyEnvOverrides(cfg Config) Config {
 			// ignore invalid value; keep existing
 		}
 	}
-	if v := os.Getenv("S3FREE_ACCESS_KEYS"); v != "" {
+	if v := os.Getenv("SHARDSEAL_ACCESS_KEYS"); v != "" {
 		// Comma-separated entries: ACCESS_KEY:SECRET_KEY[:USER]
 		keys := parseAccessKeysEnv(v)
 		if len(keys) > 0 {
@@ -204,7 +204,7 @@ func applyEnvOverrides(cfg Config) Config {
 		}
 	}
 	// Tracing overrides
-	if v := os.Getenv("S3FREE_TRACING_ENABLED"); v != "" {
+	if v := os.Getenv("SHARDSEAL_TRACING_ENABLED"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "true", "yes", "y", "on":
 			cfg.Tracing.Enabled = true
@@ -212,16 +212,16 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.Tracing.Enabled = false
 		}
 	}
-	if v := os.Getenv("S3FREE_TRACING_ENDPOINT"); v != "" {
+	if v := os.Getenv("SHARDSEAL_TRACING_ENDPOINT"); v != "" {
 		cfg.Tracing.Endpoint = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("S3FREE_TRACING_PROTOCOL"); v != "" {
+	if v := os.Getenv("SHARDSEAL_TRACING_PROTOCOL"); v != "" {
 		p := strings.ToLower(strings.TrimSpace(v))
 		if p == "grpc" || p == "http" {
 			cfg.Tracing.Protocol = p
 		}
 	}
-	if v := os.Getenv("S3FREE_TRACING_SAMPLE"); v != "" {
+	if v := os.Getenv("SHARDSEAL_TRACING_SAMPLE"); v != "" {
 		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
 			if f < 0 {
 				f = 0
@@ -232,12 +232,12 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.Tracing.SampleRatio = f
 		}
 	}
-	if v := os.Getenv("S3FREE_TRACING_SERVICE"); v != "" {
+	if v := os.Getenv("SHARDSEAL_TRACING_SERVICE"); v != "" {
 		cfg.Tracing.ServiceName = strings.TrimSpace(v)
 	}
 
 	// Multipart GC overrides
-	if v := os.Getenv("S3FREE_GC_ENABLED"); v != "" {
+	if v := os.Getenv("SHARDSEAL_GC_ENABLED"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "true", "yes", "y", "on":
 			cfg.GC.Enabled = true
@@ -245,15 +245,15 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.GC.Enabled = false
 		}
 	}
-	if v := os.Getenv("S3FREE_GC_INTERVAL"); v != "" {
+	if v := os.Getenv("SHARDSEAL_GC_INTERVAL"); v != "" {
 		cfg.GC.Interval = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("S3FREE_GC_OLDER_THAN"); v != "" {
+	if v := os.Getenv("SHARDSEAL_GC_OLDER_THAN"); v != "" {
 		cfg.GC.OlderThan = strings.TrimSpace(v)
 	}
 
 	// Admin OIDC overrides
-	if v := os.Getenv("S3FREE_OIDC_ENABLED"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_ENABLED"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "true", "yes", "y", "on":
 			cfg.OIDC.Enabled = true
@@ -261,20 +261,20 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.OIDC.Enabled = false
 		}
 	}
-	if v := os.Getenv("S3FREE_OIDC_ISSUER"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_ISSUER"); v != "" {
 		cfg.OIDC.Issuer = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("S3FREE_OIDC_CLIENT_ID"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_CLIENT_ID"); v != "" {
 		cfg.OIDC.ClientID = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("S3FREE_OIDC_AUDIENCE"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_AUDIENCE"); v != "" {
 		cfg.OIDC.Audience = strings.TrimSpace(v)
 	}
-	if v := os.Getenv("S3FREE_OIDC_JWKS_URL"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_JWKS_URL"); v != "" {
 		cfg.OIDC.JWKSURL = strings.TrimSpace(v)
 	}
 	// OIDC exemptions for admin endpoints (optional)
-	if v := os.Getenv("S3FREE_OIDC_ALLOW_UNAUTH_HEALTH"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "true", "yes", "y", "on":
 			cfg.OIDC.AllowUnauthHealth = true
@@ -282,7 +282,7 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.OIDC.AllowUnauthHealth = false
 		}
 	}
-	if v := os.Getenv("S3FREE_OIDC_ALLOW_UNAUTH_VERSION"); v != "" {
+	if v := os.Getenv("SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "true", "yes", "y", "on":
 			cfg.OIDC.AllowUnauthVersion = true
@@ -292,12 +292,12 @@ func applyEnvOverrides(cfg Config) Config {
 	}
 
 	// Size limits overrides (bytes)
-	if v := os.Getenv("S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES"); v != "" {
+	if v := os.Getenv("SHARDSEAL_LIMIT_SINGLE_PUT_MAX_BYTES"); v != "" {
 		if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
 			cfg.Limits.SinglePutMaxBytes = x
 		}
 	}
-	if v := os.Getenv("S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE"); v != "" {
+	if v := os.Getenv("SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE"); v != "" {
 		if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
 			cfg.Limits.MinMultipartPartSize = x
 		}

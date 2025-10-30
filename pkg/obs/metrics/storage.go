@@ -22,19 +22,19 @@ type StorageObserver interface {
 // NewStorageMetrics registers storage metrics on the provided registry.
 func NewStorageMetrics(reg *prometheus.Registry) *StorageMetrics {
 	bytes := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "storage",
 		Name:      "bytes_total",
 		Help:      "Total bytes processed by storage operations.",
 	}, []string{"op"})
 	ops := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "storage",
 		Name:      "ops_total",
 		Help:      "Total number of storage operations by result.",
 	}, []string{"op", "result"}) // result = "ok" | "error"
 	latency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "storage",
 		Name:      "op_duration_seconds",
 		Help:      "Histogram of storage operation durations in seconds.",

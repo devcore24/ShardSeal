@@ -7,7 +7,7 @@ dataDirs:
 # Authentication (optional)
 # Auth is disabled by default ("none"). To enable SigV4 verification, set:
 #   authMode: "sigv4"
-# Provide static credentials here or via environment variable S3FREE_ACCESS_KEYS.
+# Provide static credentials here or via environment variable SHARDSEAL_ACCESS_KEYS.
 authMode: "none"  # "none" or "sigv4"
 
 # accessKeys define static credentials when using SigV4.
@@ -20,11 +20,11 @@ authMode: "none"  # "none" or "sigv4"
 # Tracing (optional)
 # OpenTelemetry tracing is disabled by default. To enable, set enabled: true and configure endpoint/protocol.
 # You can also override via env:
-#   S3FREE_TRACING_ENABLED=true
-#   S3FREE_TRACING_ENDPOINT=localhost:4317   # for gRPC (default)
-#   S3FREE_TRACING_PROTOCOL=grpc             # or "http"
-#   S3FREE_TRACING_SAMPLE=0.1                # 10% sampling
-#   S3FREE_TRACING_SERVICE=s3free-local
+#   SHARDSEAL_TRACING_ENABLED=true
+#   SHARDSEAL_TRACING_ENDPOINT=localhost:4317   # for gRPC (default)
+#   SHARDSEAL_TRACING_PROTOCOL=grpc             # or "http"
+#   SHARDSEAL_TRACING_SAMPLE=0.1                # 10% sampling
+#   SHARDSEAL_TRACING_SERVICE=s3free-local
 tracing:
   enabled: false
   # For gRPC, typical endpoint is "localhost:4317"; for HTTP "localhost:4318"
@@ -45,9 +45,9 @@ tracing:
 # Periodically garbage-collect stale multipart uploads from the internal ".multipart" staging bucket
 # and abort the respective uploads in metadata (best-effort). Disabled by default.
 # Environment overrides:
-#   S3FREE_GC_ENABLED=true
-#   S3FREE_GC_INTERVAL=15m
-#   S3FREE_GC_OLDER_THAN=24h
+#   SHARDSEAL_GC_ENABLED=true
+#   SHARDSEAL_GC_INTERVAL=15m
+#   SHARDSEAL_GC_OLDER_THAN=24h
 gc:
   enabled: false
   interval: "15m"
@@ -58,13 +58,13 @@ gc:
 # Protects the Admin API with OIDC/OAuth2 Bearer tokens. Disabled by default.
 # Configure either issuer+clientID (preferred) or jwksURL+audience.
 # Environment overrides:
-#   S3FREE_OIDC_ENABLED=true
-#   S3FREE_OIDC_ISSUER=https://auth.example.com/realms/dev
-#   S3FREE_OIDC_CLIENT_ID=s3free-admin
-#   S3FREE_OIDC_AUDIENCE=s3free-admin-api        # optional, overrides clientID
-#   S3FREE_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
-#   S3FREE_OIDC_ALLOW_UNAUTH_HEALTH=true         # optional: allow unauthenticated /admin/health
-#   S3FREE_OIDC_ALLOW_UNAUTH_VERSION=true        # optional: allow unauthenticated /admin/version
+#   SHARDSEAL_OIDC_ENABLED=true
+#   SHARDSEAL_OIDC_ISSUER=https://auth.example.com/realms/dev
+#   SHARDSEAL_OIDC_CLIENT_ID=s3free-admin
+#   SHARDSEAL_OIDC_AUDIENCE=s3free-admin-api        # optional, overrides clientID
+#   SHARDSEAL_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
+#   SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH=true         # optional: allow unauthenticated /admin/health
+#   SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION=true        # optional: allow unauthenticated /admin/version
 oidc:
   enabled: false
   issuer: ""
@@ -78,8 +78,8 @@ oidc:
 # Request size limits (optional)
 # Configure S3 request size limits in bytes. Zero or missing values use defaults.
 # Environment overrides:
-#   S3FREE_LIMIT_SINGLE_PUT_MAX_BYTES=5368709120
-#   S3FREE_LIMIT_MIN_MULTIPART_PART_SIZE=5242880
+#   SHARDSEAL_LIMIT_SINGLE_PUT_MAX_BYTES=5368709120
+#   SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE=5242880
 limits:
   singlePutMaxBytes: 5368709120    # 5 GiB cap for single PUT
   minMultipartPartSize: 5242880    # 5 MiB minimum for non-final multipart parts

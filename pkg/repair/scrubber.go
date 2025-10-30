@@ -26,8 +26,8 @@ type Config struct {
 	Concurrency int
 }
 
-// Scrubber defines the background scrubber interface for FreeXL.
-// Implementations MUST be concurrency-safe.
+ // Scrubber defines the background scrubber interface for ShardSeal.
+ // Implementations MUST be concurrency-safe.
 type Scrubber interface {
 	// Start launches background scrubbing until Stop is called or context is canceled.
 	Start(ctx context.Context) error

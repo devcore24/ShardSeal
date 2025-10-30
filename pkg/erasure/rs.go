@@ -2,7 +2,7 @@ package erasure
 
 import "errors"
 
-// Params describes Reed–Solomon (RS) erasure coding parameters for FreeXL.
+// Params describes Reed–Solomon (RS) erasure coding parameters for ShardSeal.
 // K = data shards, M = parity shards. BlockSize and StripeSize are advisory
 // and may be used by concrete codecs; Noop ignores them.
 type Params struct {
@@ -12,7 +12,7 @@ type Params struct {
 	StripeSize int
 }
 
-// Codec is the minimal interface an erasure codec must satisfy for FreeXL.
+// Codec is the minimal interface an erasure codec must satisfy for ShardSeal.
 // Implementations MUST be concurrency-safe.
 type Codec interface {
 	Params() Params

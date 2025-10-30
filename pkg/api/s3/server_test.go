@@ -130,6 +130,7 @@ func TestObjects_PutGetDelete(t *testing.T) {
 	hs.ServeHTTP(w, r)
 	if w.Code != 200 { t.Fatalf("put expected 200, got %d", w.Code) }
 	if w.Header().Get("ETag") == "" { t.Fatalf("expected ETag header") }
+	if w.Header().Get("X-S3-Error-Code") != "" { t.Fatalf("unexpected X-S3-Error-Code on success: %q", w.Header().Get("X-S3-Error-Code")) }
 
 	// Get object
 	r = httptest.NewRequest(http.MethodGet, "/b/hello.txt", nil)
@@ -149,6 +150,9 @@ func TestObjects_PutGetDelete(t *testing.T) {
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
 	if w.Code != 404 { t.Fatalf("expected 404 after delete, got %d", w.Code) }
+	if got := w.Header().Get("X-S3-Error-Code"); got != "NoSuchKey" {
+		t.Fatalf("expected X-S3-Error-Code=NoSuchKey, got %q", got)
+	}
 }
 
 func TestBucket_DeleteLifecycle(t *testing.T) {
@@ -817,6 +821,9 @@ func TestSizeLimit_SinglePut_EntityTooLarge(t *testing.T) {
 	hint := extractSingleXMLTag(resp, "Hint")
 	if hint == "" {
 		t.Fatalf("expected Hint element present, got: %s", resp)
+	}
+	if got := w.Header().Get("X-S3-Error-Code"); got != "EntityTooLarge" {
+		t.Fatalf("expected X-S3-Error-Code=EntityTooLarge, got %q", got)
 	}
 }
 

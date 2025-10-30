@@ -23,19 +23,19 @@ func New() *Metrics {
 	reg := prometheus.NewRegistry()
 
 	inflight := prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "http",
 		Name:      "inflight_requests",
 		Help:      "Current number of inflight HTTP requests.",
 	})
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "http",
 		Name:      "requests_total",
 		Help:      "Total number of HTTP requests processed, partitioned by status code and method.",
 	}, []string{"code", "method"})
 	latency := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "s3free",
+		Namespace: "shardseal",
 		Subsystem: "http",
 		Name:      "request_duration_seconds",
 		Help:      "Histogram of latencies for HTTP requests.",

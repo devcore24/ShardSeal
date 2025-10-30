@@ -26,8 +26,8 @@ var version = "0.0.1-dev"
 var ready atomic.Bool
 
 func main() {
-	// Load config from S3FREE_CONFIG or ./config.yaml; defaults otherwise.
-	cfgPath := os.Getenv("S3FREE_CONFIG")
+	// Load config from SHARDSEAL_CONFIG or ./config.yaml; defaults otherwise.
+	cfgPath := os.Getenv("SHARDSEAL_CONFIG")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		slog.Error("failed to load config", slog.String("error", err.Error()))
@@ -235,7 +235,7 @@ func main() {
 
 	go func() {
 		ready.Store(true)
-		slog.Info("s3free listening", slog.String("version", version), slog.String("addr", cfg.Address))
+		slog.Info("shardseal listening", slog.String("version", version), slog.String("addr", cfg.Address))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -266,5 +266,5 @@ if gcStop != nil {
 if err := traceShutdown(ctx); err != nil {
 	slog.Error("tracing shutdown error", slog.String("error", err.Error()))
 }
-slog.Info("s3free stopped")
+slog.Info("shardseal stopped")
 }

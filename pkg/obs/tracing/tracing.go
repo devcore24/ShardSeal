@@ -2,8 +2,11 @@ package tracing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -170,6 +173,26 @@ func Middleware(next http.Handler) http.Handler {
 			attribute.Bool("s3.admin", isAdmin),
 			attribute.Bool("s3.error", hasError),
 		)
+
+		// Enrich with S3 error code when available (set by s3.writeError()).
+		if ec := rec.Header().Get("X-S3-Error-Code"); ec != "" {
+			span.SetAttributes(attribute.String("s3.error_code", ec))
+		}
+
+		// Optionally add s3.key_hash if enabled via env SHARDSEAL_TRACING_KEY_HASH.
+		// This avoids recording raw keys while still enabling correlation.
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("SHARDSEAL_TRACING_KEY_HASH"))) {
+		case "1", "true", "yes", "y", "on":
+			p := strings.TrimPrefix(r.URL.Path, "/")
+			parts := strings.SplitN(p, "/", 2)
+			if len(parts) == 2 && parts[1] != "" {
+				key := parts[1]
+				sum := sha256.Sum256([]byte(key))
+				// First 8 bytes -> 16 hex chars keeps it short and low cost
+				keyHash := hex.EncodeToString(sum[:8])
+				span.SetAttributes(attribute.String("s3.key_hash", keyHash))
+			}
+		}
 	})
 }
 

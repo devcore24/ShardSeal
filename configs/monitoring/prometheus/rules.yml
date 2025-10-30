@@ -4,9 +4,9 @@ groups:
     rules:
       - alert: S3freeHighErrorRate
         expr: |
-          (sum(rate(s3free_http_requests_total{code=~"5.."}[5m])) by ()
+          (sum(rate(shardseal_http_requests_total{code=~"5.."}[5m])) by ()
             /
-           sum(rate(s3free_http_requests_total[5m])) by ()) > 0.05
+           sum(rate(shardseal_http_requests_total[5m])) by ()) > 0.05
         for: 10m
         labels:
           severity: warning
@@ -17,9 +17,9 @@ groups:
 
       - alert: S3freeVeryHighErrorRate
         expr: |
-          (sum(rate(s3free_http_requests_total{code=~"5.."}[5m])) by ()
+          (sum(rate(shardseal_http_requests_total{code=~"5.."}[5m])) by ()
             /
-           sum(rate(s3free_http_requests_total[5m])) by ()) > 0.15
+           sum(rate(shardseal_http_requests_total[5m])) by ()) > 0.15
         for: 5m
         labels:
           severity: critical
@@ -30,7 +30,7 @@ groups:
 
       - alert: S3freeHighLatencyP99
         expr: |
-          histogram_quantile(0.99, sum by (le) (rate(s3free_http_request_duration_seconds_bucket[5m]))) > 1.0
+          histogram_quantile(0.99, sum by (le) (rate(shardseal_http_request_duration_seconds_bucket[5m]))) > 1.0
         for: 10m
         labels:
           severity: warning
@@ -41,7 +41,7 @@ groups:
 
       - alert: S3freeStorageOpErrors
         expr: |
-          sum(rate(s3free_storage_ops_total{result="error"}[5m])) by () > 0
+          sum(rate(shardseal_storage_ops_total{result="error"}[5m])) by () > 0
         for: 10m
         labels:
           severity: warning

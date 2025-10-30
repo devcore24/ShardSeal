@@ -19,7 +19,7 @@ import (
 const (
 s3Xmlns = "http://s3.amazonaws.com/doc/2006-03-01/"
 
-// Error codes
+ // Error codes
 errCodeNoSuchBucket        = "NoSuchBucket"
 errCodeNoSuchKey           = "NoSuchKey"
 errCodeBucketNotEmpty      = "BucketNotEmpty"
@@ -33,7 +33,6 @@ errCodeInvalidArgument     = "InvalidArgument"
 errCodeNoSuchUpload        = "NoSuchUpload"
 errCodeInvalidPart         = "InvalidPart"
 errCodeMalformedXML        = "MalformedXML"
-errCodeRangeNotSatisfiable = "RequestedRangeNotSatisfiable"
 errCodeEntityTooLarge      = "EntityTooLarge"
 errCodeEntityTooSmall      = "EntityTooSmall"
 
@@ -184,21 +183,21 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 	q := r.URL.Query()
 	
 	// Check for multipart upload operations
-	if uploadID := q.Get("uploadId"); uploadID != "" {
+	if uploadID := q.Get(queryUploadID); uploadID != "" {
 		if r.Method == http.MethodPost {
 			s.handleCompleteMultipartUpload(w, r, bucket, key, uploadID)
 			return
 		} else if r.Method == http.MethodDelete {
 			s.handleAbortMultipartUpload(w, r, bucket, key, uploadID)
 			return
-		} else if r.Method == http.MethodPut && q.Get("partNumber") != "" {
+		} else if r.Method == http.MethodPut && q.Get(queryPartNumber) != "" {
 			s.handleUploadPart(w, r, bucket, key, uploadID)
 			return
 		}
 	}
 	
 	// Check for multipart upload initiation
-	if _, hasUploads := q["uploads"]; hasUploads && r.Method == http.MethodPost {
+	if _, hasUploads := q[queryUploads]; hasUploads && r.Method == http.MethodPost {
 		s.handleInitiateMultipartUpload(w, r, bucket, key)
 		return
 	}
@@ -237,7 +236,7 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 	case http.MethodGet:
 		rc, size, etag, lastMod, err := s.objs.Get(r.Context(), bucket, key)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", r.URL.Path, "")
+			writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
 			return
 		}
 		defer rc.Close()
@@ -255,7 +254,7 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 		start, end, ok := parseRange(rangeHdr, total)
 		if !ok {
 			w.Header().Set("Content-Range", "bytes */"+itoa64(total))
-			writeError(w, http.StatusRequestedRangeNotSatisfiable, "InvalidRange", "The requested range cannot be satisfied.", r.URL.Path, "")
+			writeError(w, http.StatusRequestedRangeNotSatisfiable, errCodeInvalidRange, "The requested range cannot be satisfied.", r.URL.Path, "")
 			return
 		}
 		// Attempt to seek for efficient range reads
@@ -271,12 +270,12 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 			return
 		}
 		// Range requests require seekable storage - return error if not supported
-		writeError(w, http.StatusNotImplemented, "NotImplemented", "Range requests are not supported for this storage backend.", r.URL.Path, "")
+		writeError(w, http.StatusNotImplemented, errCodeNotImplemented, "Range requests are not supported for this storage backend.", r.URL.Path, "")
 		return
 	case http.MethodHead:
 		size, etag, lastMod, err := s.objs.Head(r.Context(), bucket, key)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", r.URL.Path, "")
+			writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
 			return
 		}
 		w.Header().Set("ETag", quoteETag(etag))
@@ -285,12 +284,12 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 		w.WriteHeader(http.StatusOK)
 	case http.MethodDelete:
 		if err := s.objs.Delete(r.Context(), bucket, key); err != nil {
-			writeError(w, http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", r.URL.Path, "")
+			writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		writeError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "The specified method is not allowed against this resource.", r.URL.Path, "")
+		writeError(w, http.StatusMethodNotAllowed, errCodeMethodNotAllowed, "The specified method is not allowed against this resource.", r.URL.Path, "")
 	}
 }
 
@@ -351,17 +350,17 @@ func (s *Server) handleBucket(w http.ResponseWriter, r *http.Request, name strin
 	switch r.Method {
 	case http.MethodGet:
 		// Check for list-type=2 query param for ListObjectsV2
-		if r.URL.Query().Get("list-type") == "2" {
+		if r.URL.Query().Get(queryListType) == "2" {
 			s.handleListObjectsV2(w, r, name)
 			return
 		}
-		writeError(w, http.StatusNotImplemented, "NotImplemented", "ListObjects (v1) not implemented; use list-type=2", r.URL.Path, "")
+		writeError(w, http.StatusNotImplemented, errCodeNotImplemented, "ListObjects (v1) not implemented; use list-type=2", r.URL.Path, "")
 	case http.MethodPut:
 		s.handleCreateBucket(w, r, name)
 	case http.MethodDelete:
 		s.handleDeleteBucket(w, r, name)
 	default:
-		writeError(w, http.StatusNotImplemented, "NotImplemented", "Bucket operation not implemented", r.URL.Path, "")
+		writeError(w, http.StatusNotImplemented, errCodeNotImplemented, "Bucket operation not implemented", r.URL.Path, "")
 	}
 }
 
@@ -403,18 +402,18 @@ func (s *Server) handleDeleteBucket(w http.ResponseWriter, r *http.Request, name
 
 func (s *Server) handleCreateBucket(w http.ResponseWriter, r *http.Request, name string) {
 	if !isValidBucketName(name) {
-		writeError(w, http.StatusBadRequest, "InvalidBucketName", "The specified bucket is not valid.", "/"+name, "")
+		writeError(w, http.StatusBadRequest, errCodeInvalidBucketName, "The specified bucket is not valid.", "/"+name, "")
 		return
 	}
 	ctx := r.Context()
 	ok, _ := s.store.BucketExists(ctx, name)
 	if ok {
 		// S3 uses 409 with BucketAlreadyOwnedByYou in many cases
-		writeError(w, http.StatusConflict, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it.", "/"+name, "")
+		writeError(w, http.StatusConflict, errCodeBucketAlreadyExists, "Your previous request to create the named bucket succeeded and you already own it.", "/"+name, "")
 		return
 	}
 	if err := s.store.CreateBucket(ctx, name); err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", "/"+name, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", "/"+name, "")
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -433,6 +432,8 @@ type s3Error struct {
 
 func writeError(w http.ResponseWriter, status int, code, message, resource, reqID string) {
 	w.Header().Set("Content-Type", "application/xml")
+	// Surface S3 error code for tracing/logging middleware
+	w.Header().Set("X-S3-Error-Code", code)
 	w.WriteHeader(status)
 	_ = xml.NewEncoder(w).Encode(s3Error{Code: code, Message: message, Resource: resource, RequestID: reqID})
 }
@@ -440,6 +441,8 @@ func writeError(w http.ResponseWriter, status int, code, message, resource, reqI
 // writeEntityTooLarge emits an EntityTooLarge error with MaxAllowedSize and a hint to use Multipart Upload.
 func writeEntityTooLarge(w http.ResponseWriter, resource string, max int64) {
 	w.Header().Set("Content-Type", "application/xml")
+	// Surface S3 error code for tracing/logging middleware
+	w.Header().Set("X-S3-Error-Code", errCodeEntityTooLarge)
 	w.WriteHeader(http.StatusBadRequest)
 	_ = xml.NewEncoder(w).Encode(s3Error{
 		Code:           errCodeEntityTooLarge,
@@ -497,15 +500,15 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	ctx := r.Context()
 	ok, _ := s.store.BucketExists(ctx, bucket)
 	if !ok {
-		writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+bucket, "")
 		return
 	}
 
 	q := r.URL.Query()
-	prefix := q.Get("prefix")
-	continuationToken := q.Get("continuation-token")
-	startAfter := q.Get("start-after")
-	maxKeysStr := q.Get("max-keys")
+	prefix := q.Get(queryPrefix)
+	continuationToken := q.Get(queryContinuationToken)
+	startAfter := q.Get(queryStartAfter)
+	maxKeysStr := q.Get(queryMaxKeys)
 
 	// Default max-keys is 1000 per S3 spec
 	maxKeys := 1000
@@ -523,7 +526,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	// Request one extra to determine if truncated
 	objects, isTruncated, err := s.objs.List(ctx, bucket, prefix, startAfter, maxKeys+1)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 
@@ -581,13 +584,13 @@ func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Re
 	ctx := r.Context()
 	ok, _ := s.store.BucketExists(ctx, bucket)
 	if !ok {
-		writeError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.", "/"+bucket, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchBucket, "The specified bucket does not exist.", "/"+bucket, "")
 		return
 	}
 	
 	uploadID, err := s.store.InitiateMultipartUpload(ctx, bucket, key)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 	
@@ -605,17 +608,17 @@ func (s *Server) handleInitiateMultipartUpload(w http.ResponseWriter, r *http.Re
 
 func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket, key, uploadID string) {
 	ctx := r.Context()
-	partNumStr := r.URL.Query().Get("partNumber")
+	partNumStr := r.URL.Query().Get(queryPartNumber)
 	partNum, err := strconv.Atoi(partNumStr)
 	if err != nil || partNum < 1 || partNum > 10000 {
-		writeError(w, http.StatusBadRequest, "InvalidArgument", "Part number must be an integer between 1 and 10000.", r.URL.Path, "")
+		writeError(w, http.StatusBadRequest, errCodeInvalidArgument, "Part number must be an integer between 1 and 10000.", r.URL.Path, "")
 		return
 	}
 
 	// Verify upload exists
 	_, err = s.store.GetMultipartUpload(ctx, uploadID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchUpload, "The specified multipart upload does not exist.", r.URL.Path, "")
 		return
 	}
 
@@ -624,14 +627,14 @@ func (s *Server) handleUploadPart(w http.ResponseWriter, r *http.Request, bucket
 	partKey := bucket + "/" + key + "/" + uploadID + "/part." + strconv.Itoa(partNum)
 	etag, size, err := s.objs.Put(ctx, internalMultipartBucket, partKey, r.Body)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 
 	// Record the part in metadata
 	err = s.store.PutPart(ctx, uploadID, partNum, etag, size)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 
@@ -664,14 +667,14 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	// Parse the complete request body
 	var req completeMultipartUpload
 	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "MalformedXML", "The XML you provided was not well-formed.", r.URL.Path, "")
+		writeError(w, http.StatusBadRequest, errCodeMalformedXML, "The XML you provided was not well-formed.", r.URL.Path, "")
 		return
 	}
 	
 	// Get the upload metadata
 	upload, err := s.store.GetMultipartUpload(ctx, uploadID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchUpload, "The specified multipart upload does not exist.", r.URL.Path, "")
 		return
 	}
 	
@@ -730,7 +733,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 			for _, closer := range partClosers {
 				closer.Close()
 			}
-			writeError(w, http.StatusInternalServerError, "InternalError", "Failed to retrieve part data.", r.URL.Path, "")
+			writeError(w, http.StatusInternalServerError, errCodeInternalError, "Failed to retrieve part data.", r.URL.Path, "")
 			return
 		}
 		partReaders = append(partReaders, rc)
@@ -750,7 +753,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	// Write the final object by streaming from the combined reader
 	etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to create final object.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "Failed to create final object.", r.URL.Path, "")
 		return
 	}
 
@@ -763,7 +766,7 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	// Complete the upload in metadata
 	_, err = s.store.CompleteMultipartUpload(ctx, uploadID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 	
@@ -786,7 +789,7 @@ func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Reque
 	// Get upload metadata to clean up parts
 	upload, err := s.store.GetMultipartUpload(ctx, uploadID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "NoSuchUpload", "The specified multipart upload does not exist.", r.URL.Path, "")
+		writeError(w, http.StatusNotFound, errCodeNoSuchUpload, "The specified multipart upload does not exist.", r.URL.Path, "")
 		return
 	}
 	
@@ -799,7 +802,7 @@ func (s *Server) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Reque
 	// Abort in metadata
 	err = s.store.AbortMultipartUpload(ctx, uploadID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "We encountered an internal error. Please try again.", r.URL.Path, "")
+		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
 	}
 	

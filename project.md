@@ -223,7 +223,7 @@ Compaction & GC
 - Local filesystem ObjectStore (dev/MVP)
 - Unit tests for buckets/objects/multipart; added tests for LocalFS multipart visibility and emptiness
 - Internal multipart files are hidden from listings and empty checks; normalized part layout to ".multipart/<key>/<uploadId>/part.N"
-- Config extended with authMode and accessKeys; env overrides via S3FREE_AUTH_MODE and S3FREE_ACCESS_KEYS
+- Config extended with authMode and accessKeys; env overrides via SHARDSEAL_AUTH_MODE and SHARDSEAL_ACCESS_KEYS
 - AWS SigV4 authentication implemented (header and presigned) with unit tests
 - Prometheus metrics exposed at /metrics; HTTP request instrumentation added
 - Readiness improvements: /readyz now reflects dependency readiness (config loaded, storage initialized, metrics registered)
@@ -245,6 +245,11 @@ Compaction & GC
 - Multipart lifecycle hardening: on-demand GC endpoint and background GC with thresholds; guard bucket delete during active uploads
 - Admin package: factored multipart GC into pkg/admin with reusable RunMultipartGC and NewMultipartGCHandler
 - Tests added: OIDC middleware and RBAC unit tests; admin GC unit tests; go build/test passing
+- Tracing enrichment (2025-10-30):
+  - Added span attribute s3.error_code and optional s3.key_hash (enable via env SHARDSEAL_TRACING_KEY_HASH). Key hash uses sha256(key) truncated to 8 bytes (16 hex chars).
+  - S3 error responses now include header X-S3-Error-Code; tracing middleware reads it to set s3.error_code.
+  - Tests validate X-S3-Error-Code presence on errors and absence on success; full test suite passing.
+  - README updated with new tracing attributes and environment flag.
 
 ### Next Up 🚧
 1) ShardSeal v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
@@ -266,7 +271,7 @@ go test ./...
 
 ```bash
 # Using sample config
-S3FREE_CONFIG=configs/local.yaml make run
+SHARDSEAL_CONFIG=configs/local.yaml make run
 # Or
 go run ./cmd/shardseal
 ```
