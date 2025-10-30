@@ -18,9 +18,9 @@ import (
 	"sort"
 	"reflect"
 
-	"s3free/pkg/metadata"
-	"s3free/pkg/security/sigv4"
-	"s3free/pkg/storage"
+	"shardseal/pkg/metadata"
+	"shardseal/pkg/security/sigv4"
+	"shardseal/pkg/storage"
 )
 
 // stub object store that keeps objects in memory for fast tests

@@ -1,7 +1,7 @@
 
 <img src="img/s3free.png" width="260">
 
-# S3free
+# ShardSeal
 
 ## Open S3-compatible, self-healing object store written in Go. Work in progress, not production-ready yet:
 
@@ -20,7 +20,7 @@
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - FreeXL v1 self-healing format, erasure coding, background scrubber
+  - ShardSeal v1 self-healing format, erasure coding, background scrubber
   - Distributed metadata/placement
 
 ## Quick start
@@ -33,7 +33,7 @@ make build
 # Run with sample config (will ensure ./data exists)
 S3FREE_CONFIG=configs/local.yaml make run
 # Or
-# go run ./cmd/s3free
+# go run ./cmd/shardseal
 ```
 
 Default address: :8080 (override with env S3FREE_ADDR). Data dirs: ./data (override with env S3FREE_DATA_DIRS as comma-separated list).
@@ -49,7 +49,7 @@ curl -v http://localhost:8080/
 curl -v -X PUT http://localhost:8080/my-bucket
 
 # Put an object (from stdin)
-printf 'Hello, s3free!\n' | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
+printf 'Hello, ShardSeal!\n' | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
 
 # Get an object
 curl -v http://localhost:8080/my-bucket/hello.txt
@@ -103,7 +103,7 @@ curl -s http://localhost:8080/metrics | head -n 20
 
 Quick start:
 ```bash
-# 1) Run s3free (default :8080 exposes /metrics)
+# 1) Run shardseal (default :8080 exposes /metrics)
 S3FREE_CONFIG=configs/local.yaml make run
 
 # 2) Start Prometheus (adjust path as needed)
@@ -207,7 +207,7 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Hid internal multipart files from listings and bucket-empty checks; normalized temp part layout
 
 ## Roadmap (short)
-1) FreeXL v1 storage format + erasure coding
+1) ShardSeal v1 storage format + erasure coding
 2) Background scrubber and self-healing
 3) Admin API hardening (OIDC/RBAC), monitoring assets (dashboards/alerts)
 

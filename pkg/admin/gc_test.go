@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"s3free/pkg/metadata"
-	"s3free/pkg/storage"
+	"shardseal/pkg/metadata"
+	"shardseal/pkg/storage"
 )
 
 // ---- fakes ----

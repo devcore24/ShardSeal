@@ -1,4 +1,4 @@
-module s3free
+module shardseal
 
 go 1.22
 

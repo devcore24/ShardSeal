@@ -11,8 +11,8 @@ import (
 	"time"
 	"strconv"
 
-	"s3free/pkg/metadata"
-	"s3free/pkg/storage"
+	"shardseal/pkg/metadata"
+	"shardseal/pkg/storage"
 )
 
 // S3 API constants

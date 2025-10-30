@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"s3free/pkg/metadata"
-	"s3free/pkg/storage"
+	"shardseal/pkg/metadata"
+	"shardseal/pkg/storage"
 )
 
 // StagingBucket is the internal bucket where multipart parts are staged.

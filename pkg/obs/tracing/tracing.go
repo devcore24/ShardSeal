@@ -139,7 +139,7 @@ func Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		tracer := otel.Tracer("s3free/http")
+		tracer := otel.Tracer("shardseal/http")
 		ctx := r.Context()
 		spanName := r.Method + " " + r.URL.EscapedPath()
 		ctx, span := tracer.Start(ctx, spanName,

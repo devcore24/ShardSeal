@@ -1,4 +1,4 @@
-# S3free — Open S3-compatible, self-healing object store (Go)
+# ShardSeal — Open S3-compatible, self-healing object store (Go)
 
 A cross‑platform, open-source object/file storage system offering S3 compatibility with built‑in self-healing, strong data integrity, and corruption recovery—without enterprise gates. Written in Go.
 
@@ -72,7 +72,7 @@ A cross‑platform, open-source object/file storage system offering S3 compatibi
   - Tolerate up to m shard losses per stripe without data loss.
   - Background scrubbing constantly looks for latent corruption and heals proactively.
 
-## Storage Format: FreeXL v1 (self-healing by design)
+## Storage Format: ShardSeal v1 (self-healing by design)
 Goals
 - Recoverability from partial state (missing metadata or data) using self-describing shards.
 - Fast integrity checks and precise localization of corruption.
@@ -84,7 +84,7 @@ On-Disk Layout (per bucket/object/version)
 - data shards: per-part, per-block shard files (or extented segments within larger files for compaction)
 
 Per-Shard Header (fixed-size, at file start)
-- Magic (FreeXLv1), format_version
+- Magic (ShardSealv1), format_version
 - object_id, bucket_id, version_id, part_id
 - stripe_id, block_index, shard_index, rs_k, rs_m
 - content_hash (BLAKE3 of plaintext block)
@@ -138,7 +138,7 @@ Compaction & GC
 - Error codes and semantics aligned with S3 where practical; documented deviations.
 
 ## CLI & Configuration (high level)
-- Single binary: `s3free` with subcommands `server`, `disk`, `cluster`, `admin`, `bench`.
+- Single binary: `shardseal` with subcommands `server`, `disk`, `cluster`, `admin`, `bench`.
 - Config file (YAML) + env overrides (address, dataDirs, authMode, accessKeys); hot-reload for select settings.
 - Examples: local single-node with N disks (paths), distributed join via peer list.
 
@@ -180,7 +180,7 @@ Compaction & GC
 - Compatibility edge cases (multipart ETag, range on encrypted objects): document and test early.
 
 ## Repository Layout (proposal)
-- cmd/s3free: main entrypoint
+- cmd/shardseal: main entrypoint
 - pkg/api/s3: S3 HTTP handlers, SigV4
 - pkg/metadata: Raft, manifests, bucket state, multipart
 - pkg/storage: disk I/O, shard files, scrubber, compaction
@@ -204,7 +204,7 @@ Compaction & GC
 
 ## Immediate Next Steps (MVP)
 1) Scaffold repo, CI, linting; choose libs (Pebble, BLAKE3, RS codec).
-2) Implement local single-node storage with FreeXL v1 headers/footers and manifest.
+2) Implement local single-node storage with ShardSeal v1 headers/footers and manifest.
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
@@ -227,7 +227,7 @@ Compaction & GC
 - AWS SigV4 authentication implemented (header and presigned) with unit tests
 - Prometheus metrics exposed at /metrics; HTTP request instrumentation added
 - Readiness improvements: /readyz now reflects dependency readiness (config loaded, storage initialized, metrics registered)
-- FreeXL v1 scaffolding: erasure Params/Codec interfaces with NoopCodec; manifest model and in-memory ManifestStore
+- ShardSeal v1 scaffolding: erasure Params/Codec interfaces with NoopCodec; manifest model and in-memory ManifestStore
 - Background scrubber scaffold: Scrubber interface and NoopScrubber with start/stop/runOnce and counters; unit tests added
 - OpenTelemetry tracing scaffold (optional; OTLP gRPC/HTTP) and HTTP tracing middleware wired
 - Storage I/O metrics for LocalFS (bytes, ops, latency) exposed via Prometheus
@@ -247,7 +247,7 @@ Compaction & GC
 - Tests added: OIDC middleware and RBAC unit tests; admin GC unit tests; go build/test passing
 
 ### Next Up 🚧
-1) FreeXL v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
+1) ShardSeal v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
 2) Tracing guidance: sampling defaults and span attributes for storage operations
 3) Monitoring documentation and additional dashboards; production Alertmanager integration examples
 4) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
@@ -268,7 +268,7 @@ go test ./...
 # Using sample config
 S3FREE_CONFIG=configs/local.yaml make run
 # Or
-go run ./cmd/s3free
+go run ./cmd/shardseal
 ```
 
 ### Testing with curl (current features)
@@ -281,7 +281,7 @@ curl -v http://localhost:8080/
 curl -v -X PUT http://localhost:8080/my-bucket
 
 # Put object from stdin
-printf 'Hello, s3free!\n' | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
+printf 'Hello, ShardSeal!\n' | curl -v -X PUT http://localhost:8080/my-bucket/hello.txt --data-binary @-
 
 # Get object
 curl -v http://localhost:8080/my-bucket/hello.txt
@@ -302,8 +302,8 @@ curl -X DELETE http://localhost:8080/my-bucket
 ### Project Structure
 
 ```
-s3free/
-├── cmd/s3free/           # Main entry point
+shardseal/
+├── cmd/shardseal/       # Main entry point
 ├── pkg/
 │   ├── api/s3/         # S3 HTTP handlers, routing
 │   ├── metadata/       # Bucket/object metadata store
@@ -486,7 +486,7 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
 
 - Recommended Stack
   - Prometheus (scrape /metrics), Alertmanager (alert routing), Grafana (dashboards)
-  - Existing: /metrics endpoint and basic HTTP metrics are provided via [obs.metrics.Metrics](pkg/obs/metrics/metrics.go) and wired in [main.main](cmd/s3free/main.go)
+  - Existing: /metrics endpoint and basic HTTP metrics are provided via [obs.metrics.Metrics](pkg/obs/metrics/metrics.go) and wired in [main.main](cmd/shardseal/main.go)
 
 - Exporters (system level)
   - node_exporter: host CPU, memory, IO, filesystem usage (bytes, inodes), context switches, saturation
@@ -498,7 +498,7 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
   - Data plane
     - S3 request counters and latency histograms by method and status (already in place); consider route-level metrics carefully
     - Storage backend: bytes read/written, op latency and errors; read-path integrity failures
-  - FreeXL storage
+  - ShardSeal storage
     - Shards written/read/repaired; RS parameters distribution; header/footer/Merkle verification failure counts
     - Placement/ring balance score, pending migrations, move rates
   - Scrubber/repair
@@ -508,7 +508,7 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
 
 - Health Endpoints and Readiness
   - /livez: lightweight liveness; returns OK quickly
-  - /readyz: readiness gate reflecting config loaded, storage initialized, metrics registered (implemented in [main.main](cmd/s3free/main.go))
+  - /readyz: readiness gate reflecting config loaded, storage initialized, metrics registered (implemented in [main.main](cmd/shardseal/main.go))
   - Admin API health: separate probe (e.g., /admin/health) with internal dependency checks (Raft leader, queues)
 
 - Dashboards (Grafana) and Alerts (Alertmanager)
@@ -527,7 +527,7 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
   - Logs: centralize with Loki or ELK; include request IDs and subject identities for admin actions
   - Tracing (OpenTelemetry):
     - Status
-      - Tracing is wired and optional; see [tracing.Init](pkg/obs/tracing/tracing.go) and middleware in [main.main](cmd/s3free/main.go).
+      - Tracing is wired and optional; see [tracing.Init](pkg/obs/tracing/tracing.go) and middleware in [main.main](cmd/shardseal/main.go).
       - Enabled via config/env; exporter supports OTLP gRPC or HTTP.
       - HTTP server spans are created for data plane requests with common HTTP attributes.
     - Recommended defaults
