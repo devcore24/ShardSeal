@@ -254,18 +254,21 @@ Compaction & GC
   - Sealed shard primitives: header/footer encode/decode with CRC32C verification and sha256 content hashing helper in [erasure.rs](pkg/erasure/rs.go:1).
   - Manifest v1 extensions: ShardMeta and NewSingleShardManifest in [storage.manifest](pkg/storage/manifest.go:1) to describe sealed shards.
   - Unit tests for header/footer round-trip and tamper detection, and hashing helper in [erasure.rs_test](pkg/erasure/rs_test.go:1); test suite green.
-  - Note: Sealed I/O not yet wired into S3 paths; this is a safe first milestone.
+  - Sealed I/O wired into LocalFS and S3 paths (feature-flagged via sealed.enabled; sealed.verifyOnRead optional). Writes produce data.ss1 plus manifest; reads prefer manifest; integrity failures mapped to 500 with X-S3-Error-Code; tracing annotates storage.sealed and storage.integrity_fail; sealed metrics emitted. See [storage.localfs](pkg/storage/localfs.go:1), [api.s3](pkg/api/s3/server.go:1), [obs.metrics.storage](pkg/obs/metrics/storage.go:1).
+  - Admin scrubber endpoints wired with no-op scrubber and RBAC: GET /admin/scrub/stats, POST /admin/scrub/runonce (see [admin.scrubber](pkg/admin/scrubber.go:1), [security.oidc.rbac](pkg/security/oidc/rbac.go:1), [cmd.shardseal.main](cmd/shardseal/main.go:1)).
 
 ### Next Up 🚧
-1) ShardSeal v1 wiring (feature-flagged sealed mode):
-   - Add config toggle to enable sealed I/O (writes create sealed shard + manifest; reads prefer manifest when present).
-   - Implement sealed write path: stream header -> payload (sha256) -> finalize header -> footer; fsync+rename; write manifest; preserve S3 ETag behavior.
-   - Implement sealed read path: verify header CRC, support range by offsetting past header, optionally verify footer/hash; error surfacing.
-   - Integration tests: PUT/GET/HEAD, Range GET, corruption detection.
-   - Docs: README section for sealed mode, operational notes.
-2) Monitoring documentation and additional dashboards; production Alertmanager integration examples
-3) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
-4) Distributed metadata/placement: design notes for embedded Raft and consistent hashing ring
+1) Integrity scrubber (production):
+   - Walk buckets/objects to verify sealed shards (header/footer CRC32C and sha256(payload)); record stats/metrics; expose via admin endpoints; configurable concurrency/intervals.
+   - Emit metrics for scrub progress and failures; add unit/integration tests; wire into existing endpoints in [admin.scrubber](pkg/admin/scrubber.go:1).
+2) Monitoring assets and docs:
+   - Validate Prometheus rules and Grafana dashboards; add Alertmanager examples; README quickstart for monitoring using [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1), [configs/monitoring/prometheus/rules.yml](configs/monitoring/prometheus/rules.yml:1), [configs/monitoring/grafana/shardseal_overview.json](configs/monitoring/grafana/shardseal_overview.json:1).
+3) ETag policy decisions and docs:
+   - Confirm/document multipart ETag behavior in sealed mode; adjust tests in [api.s3.server_test](pkg/api/s3/server_test.go:1) if needed; update [README.md](README.md:1).
+4) Docker and compose docs polish:
+   - Verify docker-compose envs/volumes for sealed and Admin OIDC/RBAC; example overrides; adminAddress guidance; see [docker-compose.yml](docker-compose.yml:1) and [Dockerfile](Dockerfile:1).
+5) Distributed metadata/placement (planning):
+   - Draft design notes for embedded Raft and consistent hashing ring with failure-domain awareness.
 
 ## Development Guide
 

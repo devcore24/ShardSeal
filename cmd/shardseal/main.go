@@ -158,7 +158,8 @@ func main() {
 		adminMux.Handle("/admin/gc/multipart", adminpkg.NewMultipartGCHandler(store, objs))
 
 		// Scrubber admin endpoints (experimental): GET /admin/scrub/stats, POST /admin/scrub/runonce
-		// Create a noop scrubber when enabled by config.
+		// Create a sealed scrubber when enabled by config; verifies header/footer CRC and content hash.
+		// Payload re-hash verification is tied to sealed.verifyOnRead for now.
 		if cfg.Scrubber.Enabled {
 			interval, ierr := time.ParseDuration(cfg.Scrubber.Interval)
 			if ierr != nil || interval <= 0 {
@@ -168,13 +169,14 @@ func main() {
 			if concurrency <= 0 {
 				concurrency = 1
 			}
-			ns := repair.NewNoopScrubber(repair.Config{
-				Interval:    interval,
-				Concurrency: concurrency,
+			ss := repair.NewSealedScrubber(cfg.DataDirs, repair.Config{
+				Interval:      interval,
+				Concurrency:   concurrency,
+				VerifyPayload: cfg.Sealed.VerifyOnRead,
 			})
-			// Start in background; best-effort (noop is light).
-			_ = ns.Start(context.Background())
-			scrub = ns
+			// Start in background
+			_ = ss.Start(context.Background())
+			scrub = ss
 		}
 		adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
 		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))

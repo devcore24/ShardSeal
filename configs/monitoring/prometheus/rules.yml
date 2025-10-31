@@ -1,62 +1,51 @@
 groups:
-  - name: s3free.rules
-    interval: 30s
-    rules:
-      - alert: S3freeHighErrorRate
-        expr: |
-          (sum(rate(shardseal_http_requests_total{code=~"5.."}[5m])) by ()
-            /
-           sum(rate(shardseal_http_requests_total[5m])) by ()) > 0.05
-        for: 10m
-        labels:
-          severity: warning
-          service: s3free
-        annotations:
-          summary: "High HTTP 5xx error rate"
-          description: "HTTP 5xx rate > 5% for 10m (current: {{ $value | printf \"%.2f\" }}). Investigate server logs and recent deployments."
-
-      - alert: S3freeVeryHighErrorRate
-        expr: |
-          (sum(rate(shardseal_http_requests_total{code=~"5.."}[5m])) by ()
-            /
-           sum(rate(shardseal_http_requests_total[5m])) by ()) > 0.15
-        for: 5m
-        labels:
-          severity: critical
-          service: s3free
-        annotations:
-          summary: "Very high HTTP 5xx error rate"
-          description: "HTTP 5xx rate > 15% for 5m (current: {{ $value | printf \"%.2f\" }}). Immediate attention required."
-
-      - alert: S3freeHighLatencyP99
-        expr: |
-          histogram_quantile(0.99, sum by (le) (rate(shardseal_http_request_duration_seconds_bucket[5m]))) > 1.0
-        for: 10m
-        labels:
-          severity: warning
-          service: s3free
-        annotations:
-          summary: "High HTTP latency p99"
-          description: "HTTP request duration p99 > 1s for 10m. Check saturation, disk IO, or dependencies."
-
-      - alert: S3freeStorageOpErrors
-        expr: |
-          sum(rate(shardseal_storage_ops_total{result="error"}[5m])) by () > 0
-        for: 10m
-        labels:
-          severity: warning
-          service: s3free
-        annotations:
-          summary: "Storage layer operation errors"
-          description: "Errors in storage ops observed (rate > 0 for 10m). Inspect s3free logs and filesystem health."
-
-      - alert: S3freeNotReady
-        expr: |
-          probe_success{job="blackbox_http", instance=~".*/readyz"} == 0
-        for: 5m
-        labels:
-          severity: critical
-          service: s3free
-        annotations:
-          summary: "Readiness probe failing"
-          description: "Blackbox probe to /readyz is failing for 5m. Service may be unavailable."
+- name: shardseal.alerts
+  rules:
+  - record: job:shardseal:http_requests:rate5m
+    expr: sum by (method, code) (rate(shardseal_http_requests_total[5m]))
+  - record: job:shardseal:http_error_ratio5m
+    expr: sum(rate(shardseal_http_requests_total{code=~"5.."}[5m])) / sum(rate(shardseal_http_requests_total[5m]))
+  - alert: ShardSealHighHTTPErrorRate
+    expr: job:shardseal:http_error_ratio5m > 0.02
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "ShardSeal high HTTP 5xx error rate"
+      description: "5xx error ratio over 5m is {{ $value | printf \"%.2f\" }} (> 2%)."
+  - record: job:shardseal:http_request_duration_seconds:p99
+    expr: histogram_quantile(0.99, sum by (le, method) (rate(shardseal_http_request_duration_seconds_bucket[5m])))
+  - alert: ShardSealHighLatencyP99
+    expr: job:shardseal:http_request_duration_seconds:p99 > 1
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "ShardSeal high p99 latency"
+      description: "HTTP p99 latency over 5m is {{ $value }}s (> 1s)."
+  - alert: ShardSealIntegrityFailures
+    expr: rate(shardseal_storage_integrity_failures_total[5m]) > 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Integrity failures detected in sealed I/O"
+      description: "Observed non-zero rate of integrity failures over 5m. Investigate disks and recent deployments."
+  - record: job:shardseal:sealed_ops_integrity_fail_ratio5m
+    expr: sum(rate(shardseal_storage_sealed_ops_total{integrity_fail="true"}[5m])) / sum(rate(shardseal_storage_sealed_ops_total[5m]))
+  - alert: ShardSealSealedIntegrityFailRatioHigh
+    expr: job:shardseal:sealed_ops_integrity_fail_ratio5m > 0.01
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "High fraction of sealed ops with integrity failures"
+      description: "More than 1% of sealed ops show integrity_fail=true over 10m (value: {{ $value }})."
+  - alert: ShardSealNoMetrics
+    expr: absent(shardseal_http_requests_total)
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "No ShardSeal metrics scraped"
+      description: "Prometheus has not scraped shardseal metrics for 5 minutes on this target."

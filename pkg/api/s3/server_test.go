@@ -315,6 +315,69 @@ func TestMultipartUpload_Complete(t *testing.T) {
 	if got := w.Body.String(); got != "part1datapart2data" { t.Fatalf("unexpected final data: %q", got) }
 }
 
+func TestMultipartUpload_ETagPolicy(t *testing.T) {
+	meta := metadata.NewMemoryStore()
+	_ = meta.CreateBucket(context.Background(), "bkt")
+	objs := newMemStore()
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// 1) Initiate multipart upload
+	r := httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploads", nil)
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initiate expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	uploadID := extractSingleXMLTag(w.Body.String(), "UploadId")
+	if uploadID == "" {
+		t.Fatalf("missing UploadId in initiate response")
+	}
+
+	// 2) Upload two parts
+	part1 := "part1data"
+	part2 := "part2data"
+
+	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString(part1))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload part 1 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	etag1 := strings.Trim(w.Header().Get("ETag"), "\"")
+
+	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=2", bytes.NewBufferString(part2))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload part 2 expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	etag2 := strings.Trim(w.Header().Get("ETag"), "\"")
+
+	// 3) Complete upload
+	completeXML := `<CompleteMultipartUpload>
+		<Part><PartNumber>1</PartNumber><ETag>"` + etag1 + `"</ETag></Part>
+		<Part><PartNumber>2</PartNumber><ETag>"` + etag2 + `"</ETag></Part>
+	</CompleteMultipartUpload>`
+	r = httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploadId="+uploadID, bytes.NewBufferString(completeXML))
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 4) HEAD to verify ETag policy: MD5 of full final object (not AWS multipart-style ETag)
+	r = httptest.NewRequest(http.MethodHead, "/bkt/large.bin", nil)
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HEAD expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	want := md5hex([]byte(part1 + part2))
+	if got := strings.Trim(w.Header().Get("ETag"), "\""); got != want {
+		t.Fatalf("ETag policy mismatch: got=%q want=%q (MD5 of full object)", got, want)
+	}
+}
 func TestMultipartUpload_Abort(t *testing.T) {
 	meta := metadata.NewMemoryStore()
 	_ = meta.CreateBucket(context.Background(), "bkt")

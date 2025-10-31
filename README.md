@@ -115,10 +115,10 @@ Notes:
 - Sealed mode can be enabled via:
   - YAML: sealed.enabled: true
   - Env: SHARDSEAL_SEALED_ENABLED=true
-- Admin scrub endpoints (experimental, no-op scrubber):
+- Admin scrub endpoints (experimental, sealed integrity verification):
   - GET /admin/scrub/stats (RBAC: admin.read)
   - POST /admin/scrub/runonce (RBAC: admin.scrub)
-  - Ensure Admin OIDC/RBAC is configured if you plan to protect these routes (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+  - The scrubber verifies sealed headers/footers and compares footer content-hash to the manifest. Payload re-hash verification is enabled when sealed.verifyOnRead is true. Protect these with OIDC/RBAC as needed (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
 
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
@@ -206,7 +206,9 @@ dataDirs:
 #   enabled: false
 #   verifyOnRead: false
 #
-# Integrity Scrubber (experimental - no-op implementation)
+# Integrity Scrubber (experimental - verification only)
+# Verifies sealed header/footer CRCs and compares footer content-hash with manifest.
+# Payload re-hash verification follows sealed.verifyOnRead (enabled when true).
 # scrubber:
 #   enabled: false
 #   interval: "1h"
@@ -253,6 +255,59 @@ Environment overrides:
 - SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE  // e.g., 5242880 (5 MiB)
 </pre>
 
+## Sealed mode (experimental)
+
+Summary
+- When enabled, objects are stored as sealed shard files with a header | payload | footer encoding and a JSON manifest persisted alongside per-object metadata. The S3 API remains unchanged (ETag is still MD5 of the payload; SigV4 works the same).
+- Range GETs are served by seeking past the header and reading a SectionReader over just the payload. See [storage.localfs](pkg/storage/localfs.go:1) and [storage.manifest](pkg/storage/manifest.go:1).
+
+On-disk layout
+- Object directory: ./data/objects/{bucket}/{key}/
+- Data file: data.ss1
+  - Header (little-endian): magic "ShardSealv1" | version:u16 | headerSize:u16 | payloadLen:u64 | headerCRC32C:u32
+  - Footer: contentHash[32] (sha256 of payload) | footerCRC32C:u32
+  - Format primitives implemented in [erasure.rs](pkg/erasure/rs.go:1) with unit tests in [erasure.rs_test](pkg/erasure/rs_test.go:1).
+- Manifest: object.meta (JSON, v1)
+  - Records bucket, key, size, ETag (MD5), lastModified, RS params, and a Shards[] slice with path, content hash algo/hex, payload length, header/footer CRCs.
+
+Behavior
+- GET/HEAD prefer sealed objects when a manifest exists; otherwise fall back to plain files (mixing sealed and plain is supported).
+- Range GETs use io.SectionReader on the payload region (efficient partial reads).
+- DELETE removes the sealed shard and the manifest; LIST derives keys from the parent dir of data.ss1 and reads metadata from the manifest. Implementation details in [storage.localfs](pkg/storage/localfs.go:1).
+
+Integrity verification (optional)
+- Set sealed.verifyOnRead: true to validate footer CRC and sha256(payload) against the manifest during GET/HEAD.
+- Integrity failures are surfaced as 500 InternalError at the S3 layer and annotated in tracing. S3 mapping handled in [api.s3](pkg/api/s3/server.go:1).
+
+Configuration
+- YAML (see sample in configs/local.yaml):
+  - sealed.enabled: false (default)
+  - sealed.verifyOnRead: false (default)
+- Environment:
+  - SHARDSEAL_SEALED_ENABLED=true|false
+  - SHARDSEAL_SEALED_VERIFY_ON_READ=true|false
+- Sample config and env wiring in [cmd.shardseal.main](cmd/shardseal/main.go:1).
+
+Observability
+- Tracing: storage.sealed=true for sealed ops; storage.integrity_fail=true when verification fails.
+- Prometheus (emitted by [obs.metrics.storage](pkg/obs/metrics/storage.go:1)):
+  - shardseal_storage_bytes_total{op}
+  - shardseal_storage_ops_total{op,result}
+  - shardseal_storage_op_duration_seconds_bucket/sum/count{op}
+  - shardseal_storage_sealed_ops_total{op,sealed,result,integrity_fail}
+  - shardseal_storage_sealed_op_duration_seconds_bucket/sum/count{op,sealed,integrity_fail}
+  - shardseal_storage_integrity_failures_total{op}
+
+Migration and compatibility
+- Enabling sealed mode affects only newly written objects. Existing plain files remain readable; GET/HEAD fall back to plain when no manifest is present.
+- Disabling sealed mode does not delete existing sealed objects; they continue to be served via manifest. You can transition gradually and mix sealed/plain safely.
+- ETag policy: MD5 of full object payload is preserved for S3 compatibility (even in sealed mode). For CompleteMultipartUpload, the ETag is MD5 of the final combined object (not AWS multipart-style ETag with a dash and part count). This may become configurable in a future release.
+
+Admin endpoints (experimental)
+- Scrubber endpoints perform sealed integrity verification:
+  - GET /admin/scrub/stats
+  - POST /admin/scrub/runonce
+- The scrubber validates sealed headers/footers and manifest hash; optional payload re-hash is enabled when sealed.verifyOnRead is true. RBAC roles: admin.read for GET, admin.scrub for POST (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1)).
 ## Authentication (optional SigV4)
 - Disabled by default. Enable verification and provide credentials either via config or environment:
 ```bash
@@ -265,7 +320,7 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 
 ## Notes & limitations (current MVP)
 - Authentication: optional. AWS SigV4 supported (header and presigned; disabled by default via config/env).
-- ETag is MD5 of full object for single-part PUTs
+- ETag is MD5 of full object for single-part PUTs; for multipart completes, ETag is also MD5 of the full final object (not AWS multipart-style ETag).
 - Objects stored under ./data/objects/{bucket}/{key}
 - Multipart temporary parts stored in separate staging bucket: .multipart/<bucket>/<object-key>/<uploadId>/part.N (excluded from user listings and bucket empty checks; cleaned up on complete/abort)
 - Range requests require seekable storage (LocalFS supports this)

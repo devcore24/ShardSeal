@@ -98,7 +98,7 @@ func TestS3_Sealed_PutGetHeadRange(t *testing.T) {
 	}
 	exp := payload[10 : 25+1]
 	if !bytes.Equal(w.Body.Bytes(), exp) {
-		t.Fatalf("Range body mismatch: got=%q want=%q", string(w.Body.Bytes()), string(exp))
+		t.Fatalf("Range body mismatch: got=%q want=%q", w.Body.String(), string(exp))
 	}
 }
 
