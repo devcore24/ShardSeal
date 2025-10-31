@@ -338,20 +338,19 @@ shardseal/
 
 
 
-Review, and needed fixes:
-This review will focus on a few key areas that could be improved or might pose problems as the project grows. I won't focus on minor style nits, as the code is already very readable.
+Review and required fixes:
+
+This section identifies key improvements and risks in the current codebase without conversational language.
 
 ### High-Level Architectural Observations
 
-*   **Excellent Structure:** The dependency injection (`New(store, objs)`) is a great pattern. The main `route` function is a clean entry point that correctly dispatches requests to more specific handlers.
-*   **Clear S3 Logic:** The implementation of core S3 operations (ListBuckets, Put/Get/Head/Delete Object, ListObjectsV2) correctly follows the S3 REST API conventions (path parsing, HTTP methods, query parameters).
-*   **Good Readability:** The code is idiomatic Go. Function and variable names are clear, and the logic is straightforward.
+*   Strong structure: dependency injection via `New(store, objs)` and a clear `route` entry point that dispatches to specific handlers.
+*   S3 logic aligns with REST conventions (path parsing, HTTP methods, query parameters) for ListBuckets, Put/Get/Head/Delete Object, and ListObjectsV2.
+*   Readable Go code with clear naming and straightforward logic.
 
-### Potential Issues and "Huge Mistakes" to Avoid
+### Potential Issues and Risks
 
-Here are some areas that stand out as potential problems, ranging from correctness bugs to significant performance issues.
-
-#### 1. Inefficient Range GET Fallback (Potential for High Memory Usage)
+#### 1. Inefficient Range GET fallback (high memory risk)
 
 In `handleObject` -> `http.MethodGet`:
 ```go
@@ -360,11 +359,11 @@ b, _ := io.ReadAll(rc)
 // ...
 _, _ = w.Write(b[start : end+1])
 ```
-You've correctly identified this as inefficient, but it's worth highlighting how dangerous this can be. If a user requests a small byte range from a multi-gigabyte (or terabyte) object, your server will **read the entire object into memory** before sending a small slice to the client. This will exhaust server memory and crash the application.
+This fallback is marked as inefficient and is hazardous in practice: requesting a small byte range on a very large object forces reading the entire object into memory, which can exhaust memory and crash the process.
 
-*   **Recommendation:** The `io.ReadSeeker` check is the correct primary path. However, the `objectStore` interface should guarantee that the returned `io.ReadCloser` also implements `io.ReadSeeker` if range requests are to be supported efficiently. The fallback should probably be removed or return a `501 Not Implemented` error to prevent a catastrophic memory allocation.
+*   Recommendation: rely on the `io.ReadSeeker` path. Ensure the `objectStore` returns an `io.ReadCloser` that also implements `io.ReadSeeker` for efficient range handling. Remove the fallback and instead return `501 Not Implemented` when a non-seekable reader is encountered.
 
-#### 2. Inefficient `CompleteMultipartUpload` (Major Scalability Bottleneck)
+#### 2. Inefficient `CompleteMultipartUpload` (major scalability bottleneck)
 
 In `handleCompleteMultipartUpload`:
 ```go
@@ -382,77 +381,72 @@ for i := 1; i <= len(upload.Parts); i++ {
 // Write the final object
 etag, _, err := s.objs.Put(ctx, bucket, key, strings.NewReader(string(combinedData)))
 ```
-This is the most critical issue in the file. Much like the Range GET fallback, this implementation reads **all parts of a multipart upload into a single memory buffer** (`combinedData`) before writing the final object. A user uploading a 100GB file would require your server to have over 100GB of RAM just to complete the upload.
+This implementation reads all parts into a single memory buffer (`combinedData`) prior to writing the final object. Large uploads can lead to excessive memory usage.
 
-*   **Recommendation:** This process must be implemented as a streaming operation. The `objectStore.Put` method should ideally accept an `io.Reader`. You can then create an `io.MultiReader` that wraps the readers for each part in sequence. This way, you read from each part file and write to the final object file in chunks, with minimal memory overhead.
-
+*   Recommendation: implement streaming assembly. Accept an `io.Reader` in `objectStore.Put` and construct an `io.MultiReader` over per-part readers to stream data with minimal memory footprint.
     ```go
-    // Conceptual Example
+    // Conceptual streaming approach
     var partReaders []io.Reader
-    var partClosers []io.ReadCloser // To close them later
+    var partClosers []io.ReadCloser
     for i := 1; i <= len(upload.Parts); i++ {
-        partKey := // ...
+        partKey := /* derive part key */
         rc, _, _, _, err := s.objs.Get(ctx, bucket, partKey)
         // handle error
         partReaders = append(partReaders, rc)
         partClosers = append(partClosers, rc)
     }
     defer func() {
-        for _, closer := range partClosers {
-            closer.Close()
-        }
+        for _, c := range partClosers { _ = c.Close() }
     }()
-
-    combinedReader := io.MultiReader(partReaders...)
-    etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
+    combined := io.MultiReader(partReaders...)
+    etag, _, err := s.objs.Put(ctx, bucket, key, combined)
     ```
 
-#### 3. Error Handling and Ignored Errors
+#### 3. Error handling and ignored errors
 
-There are numerous places where errors are ignored with `_ = ...`. While sometimes acceptable for closing operations in `defer`, it can hide bugs in critical paths.
+Several sites ignore errors using `_ = ...`. While acceptable for best-effort cleanup, it can hide important failures in critical paths.
 
-*   `_ = xml.NewEncoder(w).Encode(res)` in `handleListBuckets` and elsewhere. If the client closes the connection midway, this will return an error. While you can't do much about it, logging it can be useful for debugging.
-*   `_ = s.store.DeleteBucket(ctx, name)` in `handleDeleteBucket`. What if `s.objs.RemoveBucket` succeeds but `s.store.DeleteBucket` fails? You now have an orphaned bucket on the filesystem that doesn't exist in your metadata. This is a consistency issue. The operation should be atomic or have a rollback mechanism.
+*   `_ = xml.NewEncoder(w).Encode(res)` in list operations: if the client disconnects, the encoder returns an error; log at debug level to aid diagnostics.
+*   `_ = s.store.DeleteBucket(ctx, name)` in delete flows: if `s.objs.RemoveBucket` succeeds but `s.store.DeleteBucket` fails, the filesystem may retain an orphaned bucket. This is a consistency risk; operations need to be atomic or include compensating actions.
 
-*   **Recommendation:** At a minimum, log these ignored errors. For critical metadata operations, consider how to handle partial failures to prevent state inconsistency.
+*   Recommendation: log ignored errors; design critical metadata flows to avoid partial-commit inconsistencies.
 
-#### 4. Concurrency and Race Conditions (Implicit Issue)
+#### 4. Concurrency and race conditions
 
-Your code doesn't have any explicit locking, which implies that the `metadata.Store` and `objectStore` implementations must be safe for concurrent use. This is a perfectly valid design choice, but it's a critical one.
+The current code does not use explicit locking, implying `metadata.Store` and `objectStore` must be safe for concurrent use.
 
-*   For example, in `handleCreateBucket`, you have a "check-then-act" sequence:
+*   Example: in bucket creation, a "check-then-act" sequence occurs:
     1.  `ok, _ := s.store.BucketExists(ctx, name)`
     2.  `if err := s.store.CreateBucket(ctx, name); err != nil { ... }`
 
-    If two requests to create the same bucket arrive at nearly the same time, it's possible for both to pass the `BucketExists` check before either has a chance to call `CreateBucket`. The `CreateBucket` implementation itself must be atomic to handle this. Make sure this is documented in your interfaces.
+    If concurrent requests pass the existence check, the create operation must be atomic. Document the concurrency guarantees in the interfaces and ensure implementations enforce them.
 
-### Minor Suggestions and Code Improvements
+### Minor suggestions and improvements
 
-*   **Multipart Part Storage:** Storing parts under a visible path like `/.multipart/` within the same bucket could be problematic. Clients performing a `ListObjectsV2` might see these temporary files if the prefix matches. A common pattern is to use a separate, hidden "staging" area or to use object keys that are suffixed with upload IDs and part numbers in a way that is unlikely to be listed by users.
-*   **Range Parsing Robustness:** Your `parseRange` function is quite good. However, S3 clients can be quirky. It's solid for a starting point, but be prepared to encounter more edge cases as you test with different S3 clients (e.g., multiple ranges, which you are correctly not supporting yet).
-*   **Magic Numbers/Strings:** Use constants for common strings like XML namespaces, error codes (`"NoSuchBucket"`), and query parameters (`"list-type"`). This prevents typos and makes the code easier to maintain.
+*   Multipart part storage: storing under a visible path like `/.multipart/` may surface temporary objects in listings; prefer a separate hidden staging area or naming that avoids user-visible prefixes.
+*   Range parsing: the `parseRange` implementation is solid for initial support; anticipate client edge cases (e.g., multiple ranges) as compatibility testing expands.
+*   Constants: define shared constants for XML namespace, common S3 error codes (e.g., `"NoSuchBucket"`), and query parameters (e.g., `"list-type"`) to reduce typos.
     ```go
     const (
-        s3Xmlns         = "http://s3.amazonaws.com/doc/2006-03-01/"
+        s3Xmlns             = "http://s3.amazonaws.com/doc/2006-03-01/"
         errCodeNoSuchBucket = "NoSuchBucket"
     )
     ```
-*   **Continuation Token Logic in `ListObjectsV2`:**
+*   Continuation token in `ListObjectsV2`:
     ```go
     nextToken = objects[maxKeys-1].Key
     objects = objects[:maxKeys]
     ```
-    This is a common and correct pattern. Just ensure that the `objectStore.List` implementation guarantees a stable, alphabetical sort order for keys. If the order is not guaranteed, pagination will be unreliable.
+    Ensure the underlying list operation returns a stable, alphabetical order to keep pagination reliable.
 
 ### Summary
 
-You do not have any "huge mistakes" that require a complete rewrite. The foundation is solid. The primary actions you should take are:
+No issues requiring a complete rewrite were identified. Priority actions:
 
-1.  **Fix the `CompleteMultipartUpload` memory usage immediately.** This is a critical scalability bug.
-2.  **Fix the Range GET fallback memory usage.** This is also a critical stability bug.
-3.  **Review error handling for metadata consistency.** Decide on a strategy for handling partial failures (e.g., in `handleDeleteBucket`).
-4.  **Ensure your backend implementations are concurrent-safe**, especially for "check-then-act" operations.
-
+1.  Replace the `CompleteMultipartUpload` buffer-accumulation logic with a streaming implementation.
+2.  Remove the Range GET fallback and require a seekable reader or return `501 Not Implemented`.
+3.  Strengthen error handling for metadata consistency and log ignored errors appropriately.
+4.  Document and enforce concurrency guarantees for "check-then-act" operations.
 This is a fantastic start to a complex project. Keep up the great work
 ## Future Work: Admin Control Plane, UI, and Monitoring
 
@@ -614,6 +608,7 @@ Highlights
 - Observability
   - Sealed storage metrics: ops, latency, integrity failures with low-cardinality labels.
   - Scrubber metrics: shardseal_scrubber_scanned_total, errors_total, last_run_timestamp_seconds, uptime_seconds.
+  - Repair metrics: shardseal_repair_queue_depth (queue depth gauge; low cardinality).
   - Example Prometheus rules and Grafana dashboard provided.
 
 Configuration (YAML + env)
@@ -653,6 +648,8 @@ Metrics (Prometheus)
   - shardseal_scrubber_errors_total
   - shardseal_scrubber_last_run_timestamp_seconds
   - shardseal_scrubber_uptime_seconds
+- Repair
+  - shardseal_repair_queue_depth
 
 Monitoring assets
 - Prometheus:

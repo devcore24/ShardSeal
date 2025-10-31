@@ -57,8 +57,15 @@ func hasAny(s *Subject, required []string) bool {
 }
 
 // DefaultAdminPolicy defines minimal role requirements for Admin API endpoints:
-// - GET /admin/health, GET /admin/version require role/scope: "admin.read"
-// - POST /admin/gc/multipart requires role/scope: "admin.gc"
+// - GET /admin/health, GET /admin/version => "admin.read"
+// - POST /admin/gc/multipart => "admin.gc"
+// - GET /admin/scrub/stats => "admin.read"
+// - POST /admin/scrub/runonce => "admin.scrub"
+// - GET /admin/repair/stats => "admin.repair.read"
+// - POST /admin/repair/enqueue => "admin.repair.enqueue"
+// - GET /admin/repair/worker/stats => "admin.repair.read"
+// - POST /admin/repair/worker/pause => "admin.repair.control"
+// - POST /admin/repair/worker/resume => "admin.repair.control"
 // Other GET /admin/* default to "admin.read". Non-admin routes have no RBAC requirement here.
 func DefaultAdminPolicy() Policy {
 	return func(r *http.Request) []string {
@@ -73,6 +80,16 @@ func DefaultAdminPolicy() Policy {
 			return []string{"admin.read"}
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/scrub/runonce":
 			return []string{"admin.scrub"}
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/repair/stats":
+			return []string{"admin.repair.read"}
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/repair/enqueue":
+			return []string{"admin.repair.enqueue"}
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/repair/worker/stats":
+			return []string{"admin.repair.read"}
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/repair/worker/pause":
+			return []string{"admin.repair.control"}
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/repair/worker/resume":
+			return []string{"admin.repair.control"}
 		default:
 			// apply read requirement to other GET /admin endpoints as a conservative default
 			if r.Method == http.MethodGet && len(r.URL.Path) >= 7 && r.URL.Path[:7] == "/admin/" {

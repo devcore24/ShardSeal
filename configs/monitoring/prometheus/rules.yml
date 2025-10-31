@@ -82,3 +82,34 @@ groups:
     annotations:
       summary: "Scrubber not running"
       description: "Scrubber uptime is zero or metric absent for at least 10 minutes. Check configuration and logs."
+
+  # Repair queue metrics: recording rules and alerts
+  - record: job:shardseal:repair_queue_depth
+    expr: sum(shardseal_repair_queue_depth)
+
+  - alert: ShardSealRepairQueueNonZero
+    expr: job:shardseal:repair_queue_depth > 0
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Repair queue non-zero"
+      description: "Repair queue depth has been greater than zero for 15 minutes (depth={{ $value }}). Investigate scrub failures or read-time integrity issues."
+
+  - alert: ShardSealRepairQueueHigh
+    expr: job:shardseal:repair_queue_depth > 100
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High repair queue depth"
+      description: "Repair queue depth has exceeded 100 items for 10 minutes (depth={{ $value }}). Capacity or integrity incident likely; prioritize remediation."
+
+  - alert: ShardSealRepairMetricsMissing
+    expr: absent(shardseal_repair_queue_depth)
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Repair metrics missing"
+      description: "Prometheus has not observed repair queue metrics for 10 minutes. Verify admin is enabled and repair metrics polling is active."

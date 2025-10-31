@@ -130,6 +130,9 @@ func main() {
 	var gcStop context.CancelFunc
 	var scrub repair.Scrubber
 	var scrubPollStop func()
+	var repQ repair.RepairQueue
+	var repQPollStop func()
+	var repW *repair.Worker
 	if cfg.AdminAddress != "" {
 		adminMux := http.NewServeMux()
 		// /admin/health: reports liveness and readiness along with version and listen address
@@ -190,6 +193,23 @@ func main() {
 		adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
 		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
 
+		// Repair queue admin endpoints
+		repQ = repair.NewMemQueue(1024)
+		adminMux.Handle("/admin/repair/stats", adminpkg.NewRepairQueueStatsHandler(repQ))
+		adminMux.Handle("/admin/repair/enqueue", adminpkg.NewRepairEnqueueHandler(repQ))
+		// Observe repair queue depth
+		rm := metrics.NewRepairMetrics(m.Registry())
+		repQPollStop = rm.StartPolling(repQ, 10*time.Second)
+
+		// Start background repair worker (M1 no-op processor) and expose controls
+		repW = repair.NewWorker(repQ, repair.WorkerConfig{Concurrency: 1})
+		_ = repW.Start(context.Background())
+
+		// Worker control endpoints: stats/pause/resume (RBAC enforced by policy)
+		adminMux.Handle("/admin/repair/worker/stats", adminpkg.NewRepairWorkerStatsHandler(repW))
+		adminMux.Handle("/admin/repair/worker/pause", adminpkg.NewRepairWorkerPauseHandler(repW))
+		adminMux.Handle("/admin/repair/worker/resume", adminpkg.NewRepairWorkerResumeHandler(repW))
+		
 						// Optionally protect Admin API with OIDC when enabled
 						adminHandler := http.Handler(adminMux)
 						if cfg.OIDC.Enabled {
@@ -311,6 +331,18 @@ if scrub != nil {
 // Stop scrubber metrics poller
 if scrubPollStop != nil {
 	scrubPollStop()
+}
+// Stop repair metrics poller
+if repQPollStop != nil {
+	repQPollStop()
+}
+// Stop repair worker
+if repW != nil {
+	_ = repW.Stop(ctx)
+}
+// Close repair queue
+if repQ != nil {
+	_ = repQ.Close()
 }
 // Shutdown tracing provider
 if err := traceShutdown(ctx); err != nil {

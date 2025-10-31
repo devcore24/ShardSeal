@@ -108,3 +108,72 @@ func TestRBAC_RequireRole_HasScope_Passes(t *testing.T) {
 		t.Fatalf("want 200, got %d", rr.Code)
 	}
 }
+// Additional tests for scrub and repair RBAC mappings and enforcement
+
+func TestDefaultAdminPolicy_Mappings_ScrubAndRepair(t *testing.T) {
+	p := DefaultAdminPolicy()
+
+	// GET /admin/scrub/stats -> admin.read
+	req := httptest.NewRequest(http.MethodGet, "/admin/scrub/stats", nil)
+	if got := p(req); len(got) != 1 || got[0] != "admin.read" {
+		t.Fatalf("policy(GET /admin/scrub/stats) = %v, want [admin.read]", got)
+	}
+
+	// POST /admin/scrub/runonce -> admin.scrub
+	req = httptest.NewRequest(http.MethodPost, "/admin/scrub/runonce", nil)
+	if got := p(req); len(got) != 1 || got[0] != "admin.scrub" {
+		t.Fatalf("policy(POST /admin/scrub/runonce) = %v, want [admin.scrub]", got)
+	}
+
+	// GET /admin/repair/stats -> admin.repair.read
+	req = httptest.NewRequest(http.MethodGet, "/admin/repair/stats", nil)
+	if got := p(req); len(got) != 1 || got[0] != "admin.repair.read" {
+		t.Fatalf("policy(GET /admin/repair/stats) = %v, want [admin.repair.read]", got)
+	}
+
+	// POST /admin/repair/enqueue -> admin.repair.enqueue
+	req = httptest.NewRequest(http.MethodPost, "/admin/repair/enqueue", nil)
+	if got := p(req); len(got) != 1 || got[0] != "admin.repair.enqueue" {
+		t.Fatalf("policy(POST /admin/repair/enqueue) = %v, want [admin.repair.enqueue]", got)
+	}
+}
+
+func TestRBAC_DefaultPolicy_RepairStats_PassesWithRole(t *testing.T) {
+	h := RBAC(DefaultAdminPolicy())(okHandler())
+	subj := &Subject{Subject: "alice", Roles: []string{"admin.repair.read"}}
+
+	rr := httptest.NewRecorder()
+	req := makeReq(http.MethodGet, "/admin/repair/stats", subj)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+}
+
+func TestRBAC_DefaultPolicy_RepairEnqueue_PassesWithRole(t *testing.T) {
+	h := RBAC(DefaultAdminPolicy())(okHandler())
+	subj := &Subject{Subject: "bob", Roles: []string{"admin.repair.enqueue"}}
+
+	rr := httptest.NewRecorder()
+	req := makeReq(http.MethodPost, "/admin/repair/enqueue", subj)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rr.Code)
+	}
+}
+
+func TestRBAC_DefaultPolicy_RepairEnqueue_ForbiddenWithoutRole(t *testing.T) {
+	h := RBAC(DefaultAdminPolicy())(okHandler())
+	// Subject lacks required role
+	subj := &Subject{Subject: "carol", Roles: []string{"admin.read"}}
+
+	rr := httptest.NewRecorder()
+	req := makeReq(http.MethodPost, "/admin/repair/enqueue", subj)
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d", rr.Code)
+	}
+}

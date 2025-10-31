@@ -143,6 +143,7 @@ Notes:
   - shardseal_scrubber_errors_total
   - shardseal_scrubber_last_run_timestamp_seconds
   - shardseal_scrubber_uptime_seconds
+  - shardseal_repair_queue_depth
 - Example:
 ```bash
 curl -s http://localhost:8080/metrics | head -n 20
@@ -157,7 +158,7 @@ curl -s http://localhost:8080/metrics | head -n 20
 - Prometheus sample config: configs/monitoring/prometheus/prometheus.yml
 - Example alert rules: configs/monitoring/prometheus/rules.yml
 - Grafana dashboard (import JSON): configs/monitoring/grafana/shardseal_overview.json
-- Includes sealed I/O metrics and scrubber metrics (scanned/errors/last_run/uptime). The server polls scrubber stats every 10s and exports to the main registry.
+- Includes sealed I/O metrics, scrubber metrics (scanned/errors/last_run/uptime), and repair metrics (queue_depth). The server polls scrubber stats and repair queue length every 10s and exports to the main registry.
 
 Quick start:
 ```bash
@@ -197,12 +198,20 @@ Tracing and S3 error headers
 
 
 
-Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart; admin.scrub for POST /admin/scrub/runonce.
+Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced:
+- admin.read for GET endpoints
+- admin.gc for POST /admin/gc/multipart
+- admin.scrub for POST /admin/scrub/runonce
+- admin.repair.read for GET /admin/repair/stats
+- admin.repair.enqueue for POST /admin/repair/enqueue
+
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
 - POST /admin/gc/multipart: run a single multipart GC pass (requires RBAC admin.gc; OIDC-protected if enabled)
 - /admin/scrub/stats: get current scrubber stats (requires RBAC admin.read)
 - POST /admin/scrub/runonce: trigger a single scrub pass (requires RBAC admin.scrub)
+- /admin/repair/stats: current repair queue length (requires RBAC admin.repair.read)
+- POST /admin/repair/enqueue: enqueue a repair item (requires RBAC admin.repair.enqueue). Body JSON accepts RepairItem fields {bucket, key, shardPath, reason, priority}; discovered timestamp is auto-populated when omitted. The queue is in-memory in this release.
 
 ## Configuration
 Example at configs/local.yaml:
