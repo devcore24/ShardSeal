@@ -78,6 +78,13 @@ func main() {
 	// Wire storage metrics observer
 	objs.SetObserver(sm)
 
+	// Sealed I/O toggle (experimental): wire storage behavior
+	objs.SetSealed(cfg.Sealed.Enabled, cfg.Sealed.VerifyOnRead)
+	slog.Info("sealed I/O",
+		slog.Bool("enabled", cfg.Sealed.Enabled),
+		slog.Bool("verifyOnRead", cfg.Sealed.VerifyOnRead),
+	)
+
 	api := s3.NewWithLimits(store, objs, s3.Limits{
 		SinglePutMaxBytes:    cfg.Limits.SinglePutMaxBytes,
 		MinMultipartPartSize: cfg.Limits.MinMultipartPartSize,

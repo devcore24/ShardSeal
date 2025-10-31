@@ -250,9 +250,19 @@ Compaction & GC
   - S3 error responses now include header X-S3-Error-Code; tracing middleware reads it to set s3.error_code.
   - Tests validate X-S3-Error-Code presence on errors and absence on success; full test suite passing.
   - README and sample config updated; main wiring passes config flag into tracing middleware.
+- ShardSeal v1 scaffolding (2025-10-31):
+  - Sealed shard primitives: header/footer encode/decode with CRC32C verification and sha256 content hashing helper in [erasure.rs](pkg/erasure/rs.go:1).
+  - Manifest v1 extensions: ShardMeta and NewSingleShardManifest in [storage.manifest](pkg/storage/manifest.go:1) to describe sealed shards.
+  - Unit tests for header/footer round-trip and tamper detection, and hashing helper in [erasure.rs_test](pkg/erasure/rs_test.go:1); test suite green.
+  - Note: Sealed I/O not yet wired into S3 paths; this is a safe first milestone.
 
 ### Next Up 🚧
-1) ShardSeal v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
+1) ShardSeal v1 wiring (feature-flagged sealed mode):
+   - Add config toggle to enable sealed I/O (writes create sealed shard + manifest; reads prefer manifest when present).
+   - Implement sealed write path: stream header -> payload (sha256) -> finalize header -> footer; fsync+rename; write manifest; preserve S3 ETag behavior.
+   - Implement sealed read path: verify header CRC, support range by offsetting past header, optionally verify footer/hash; error surfacing.
+   - Integration tests: PUT/GET/HEAD, Range GET, corruption detection.
+   - Docs: README section for sealed mode, operational notes.
 2) Monitoring documentation and additional dashboards; production Alertmanager integration examples
 3) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
 4) Distributed metadata/placement: design notes for embedded Raft and consistent hashing ring

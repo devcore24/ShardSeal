@@ -220,6 +220,13 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Optional s3.key_hash attribute on spans (sha256(key) truncated to 8 bytes hex), configurable via tracing.keyHashEnabled or env SHARDSEAL_TRACING_KEY_HASH=true.
 - README, sample config, and tests updated accordingly.
 
+## Recent Improvements (2025-10-31)
+- ShardSeal v1 scaffolding:
+  - Introduced sealed shard primitives: header/footer encode/decode with CRC32C, plus a streaming sha256 helper for payload hashing (see [erasure.rs](pkg/erasure/rs.go:1)).
+  - Extended manifest v1 with ShardMeta and a helper to build a single-shard manifest (see [storage.manifest](pkg/storage/manifest.go:1)).
+  - Added unit tests for header/footer round-trip and tamper detection (CRC mismatch) and hashing helper (see [erasure.rs_test](pkg/erasure/rs_test.go:1)).
+  - Note: sealed I/O is not yet wired into the S3 paths; this is a safe first milestone to validate format primitives.
+
 ## Roadmap (short)
 1) ShardSeal v1 storage format + erasure coding
 2) Background scrubber and self-healing

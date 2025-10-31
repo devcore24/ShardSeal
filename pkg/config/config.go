@@ -46,6 +46,7 @@ type Config struct {
 	AuthMode     string            `yaml:"authMode"`            // "none" or "sigv4"
 	AccessKeys   []StaticAccessKey `yaml:"accessKeys"`
 	Tracing      TracingConfig     `yaml:"tracing"`
+	Sealed       SealedConfig      `yaml:"sealed"`               // sealed I/O (ShardSeal v1) toggles
 	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
 	OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
 	Limits       LimitsConfig      `yaml:"limits"`              // S3 request size limits
@@ -66,6 +67,12 @@ type TracingConfig struct {
 	SampleRatio    float64 `yaml:"sampleRatio,omitempty"`     // 0.0 - 1.0
 	ServiceName    string  `yaml:"serviceName,omitempty"`     // override service.name; default "s3free"
 	KeyHashEnabled bool    `yaml:"keyHashEnabled,omitempty"`  // when true, emit s3.key_hash (sha256(key) first 8 bytes hex)
+}
+ 
+// SealedConfig toggles ShardSeal v1 sealed I/O.
+type SealedConfig struct {
+	Enabled      bool `yaml:"enabled"`        // when true, store objects in sealed format (v1)
+	VerifyOnRead bool `yaml:"verifyOnRead"`   // when true, verify footer/content hash during GET/HEAD
 }
 
 // GCConfig controls periodic garbage-collection of stale multipart uploads.
@@ -109,6 +116,10 @@ func Default() Config {
 			SampleRatio:    0.0,
 			ServiceName:    "s3free",
 			KeyHashEnabled: false,
+		},
+		Sealed: SealedConfig{
+			Enabled:      false,
+			VerifyOnRead: false,
 		},
 		GC: GCConfig{
 			Enabled:   false,
@@ -247,6 +258,24 @@ func applyEnvOverrides(cfg Config) Config {
 		}
 	}
 
+	// Sealed I/O overrides
+	if v := os.Getenv("SHARDSEAL_SEALED_ENABLED"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.Sealed.Enabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.Sealed.Enabled = false
+		}
+	}
+	if v := os.Getenv("SHARDSEAL_SEALED_VERIFY_ON_READ"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.Sealed.VerifyOnRead = true
+		case "0", "false", "no", "n", "off":
+			cfg.Sealed.VerifyOnRead = false
+		}
+	}
+	
 	// Multipart GC overrides
 	if v := os.Getenv("SHARDSEAL_GC_ENABLED"); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {

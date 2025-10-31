@@ -40,6 +40,15 @@ tracing:
   # Env override: SHARDSEAL_TRACING_KEY_HASH=true
   keyHashEnabled: false
 
+# Sealed I/O (experimental)
+# ShardSeal v1 sealed object format controls. Disabled by default.
+# Environment overrides:
+#   SHARDSEAL_SEALED_ENABLED=true
+#   SHARDSEAL_SEALED_VERIFY_ON_READ=true
+sealed:
+  enabled: false
+  verifyOnRead: false
+
 # Optional Admin API (read-only endpoints and admin tools)
 # Uncomment to enable a separate admin listener (e.g., for /admin/health, /admin/version, GC endpoint)
 # adminAddress: ":9090"

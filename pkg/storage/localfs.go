@@ -3,6 +3,8 @@ package storage
 import (
 	"context"
 	"crypto/md5"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,13 +14,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	erasure "shardseal/pkg/erasure"
 )
 
  // LocalFS implements ObjectStore on a single local directory. Suitable for dev/MVP.
-type LocalFS struct {
-	base string // absolute base directory
-	obs  storageObserver
-}
+ type LocalFS struct {
+ 	base         string // absolute base directory
+ 	obs          storageObserver
+ 	sealedEnabled bool  // when true, write sealed shard files + manifest
+ 	verifyOnRead  bool  // when true, verify footer/content hash on read (TODO in read path)
+ }
 
  // NewLocalFS creates a LocalFS rooted at the first non-empty dir from dirs.
 func NewLocalFS(dirs []string) (*LocalFS, error) {
@@ -44,28 +50,108 @@ func (l *LocalFS) SetObserver(o storageObserver) {
 	l.obs = o
 }
 
+// SetSealed toggles sealed I/O behavior (experimental).
+func (l *LocalFS) SetSealed(enabled, verifyOnRead bool) {
+	l.sealedEnabled = enabled
+	l.verifyOnRead = verifyOnRead
+}
+
 // observe emits a single observation if an observer is registered.
 func (l *LocalFS) observe(op string, bytes int64, err error, start time.Time) {
 	if l != nil && l.obs != nil {
 		l.obs.Observe(op, bytes, err, time.Since(start))
 	}
 }
+// sectionReadCloser wraps an io.SectionReader with a Close that closes the underlying file.
+// It implements io.ReadSeeker and io.Closer.
+type sectionReadCloser struct {
+	sr *io.SectionReader
+	f  *os.File
+}
+
+func (s *sectionReadCloser) Read(p []byte) (int, error) { return s.sr.Read(p) }
+func (s *sectionReadCloser) Seek(offset int64, whence int) (int64, error) {
+	return s.sr.Seek(offset, whence)
+}
+func (s *sectionReadCloser) Close() error { return s.f.Close() }
+
 
 func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (string, int64, error) {
 	start := time.Now()
-	path, err := l.objectPath(bucket, key)
-	if err != nil {
+
+	// Non-sealed path (default)
+	if !l.sealedEnabled {
+		path, err := l.objectPath(bucket, key)
+		if err != nil {
+			l.observe("put", 0, err, start)
+			return "", 0, err
+		}
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			l.observe("put", 0, err, start)
+			return "", 0, err
+		}
+
+		// Write to a temporary file and atomically rename to the final path.
+		tmp, err := os.CreateTemp(dir, ".put-*")
+		if err != nil {
+			l.observe("put", 0, err, start)
+			return "", 0, err
+		}
+		tmpName := tmp.Name()
+		defer func() { _ = os.Remove(tmpName) }()
+
+		h := md5.New()
+		n, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
+		// Attempt to flush data to disk on success before rename.
+		if copyErr == nil {
+			if err := tmp.Sync(); err != nil {
+				copyErr = err
+			}
+		}
+		// Close the file handle
+		if cerr := tmp.Close(); copyErr == nil && cerr != nil {
+			copyErr = cerr
+		}
+		if copyErr != nil {
+			l.observe("put", n, copyErr, start)
+			return "", n, copyErr
+		}
+
+		// Atomic rename to final path
+		if err := os.Rename(tmpName, path); err != nil {
+			l.observe("put", n, err, start)
+			return "", n, err
+		}
+
+		etag := hex.EncodeToString(h.Sum(nil))
+		// best-effort set mtime as last-modified
+		_ = os.Chtimes(path, time.Now(), time.Now())
+		l.observe("put", n, nil, start)
+		return etag, n, nil
+	}
+
+	// Sealed path (ShardSeal v1): write header | payload | footer, then persist manifest.
+	if bucket == "" {
+		err := fmt.Errorf("empty bucket")
 		l.observe("put", 0, err, start)
 		return "", 0, err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	cleanKey := strings.TrimPrefix(filepath.Clean("/"+key), "/")
+	odir := filepath.Join(l.base, "objects", bucket, cleanKey)
+
+	// prevent escape: ensure dir is under base
+	if !strings.HasPrefix(filepath.Clean(odir)+string(os.PathSeparator), filepath.Clean(l.base)+string(os.PathSeparator)) {
+		err := fmt.Errorf("invalid object path")
+		l.observe("put", 0, err, start)
+		return "", 0, err
+	}
+	if err := os.MkdirAll(odir, 0o700); err != nil {
 		l.observe("put", 0, err, start)
 		return "", 0, err
 	}
 
-	// Write to a temporary file and atomically rename to the final path.
-	tmp, err := os.CreateTemp(dir, ".put-*")
+	tmp, err := os.CreateTemp(odir, ".put-*.ss1.tmp")
 	if err != nil {
 		l.observe("put", 0, err, start)
 		return "", 0, err
@@ -73,15 +159,64 @@ func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (str
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
-	h := md5.New()
-	n, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
-	// Attempt to flush data to disk on success before rename.
+	// Reserve header space (fixed 28 bytes as per encoder) and stream payload while hashing.
+	const headerReserve = 28
+	if _, err := tmp.Write(make([]byte, headerReserve)); err != nil {
+		_ = tmp.Close()
+		l.observe("put", 0, err, start)
+		return "", 0, err
+	}
+	sha := sha256.New()
+	md := md5.New()
+	n, copyErr := io.Copy(io.MultiWriter(tmp, sha, md), r)
+	// Attempt to flush payload
 	if copyErr == nil {
 		if err := tmp.Sync(); err != nil {
 			copyErr = err
 		}
 	}
-	// Close the file handle
+
+	// Prepare footer with sha256(payload)
+	var sum32 [32]byte
+	copy(sum32[:], sha.Sum(nil))
+	footerBytes, fErr := erasure.EncodeShardFooter(sum32)
+	if copyErr == nil && fErr != nil {
+		copyErr = fErr
+	}
+	if copyErr == nil {
+		if _, err := tmp.Write(footerBytes); err != nil {
+			copyErr = err
+		}
+	}
+	if copyErr == nil {
+		if err := tmp.Sync(); err != nil {
+			copyErr = err
+		}
+	}
+
+	// Write final header at the start
+	var headerBytes []byte
+	if copyErr == nil {
+		hdr, herr := erasure.EncodeShardHeader(erasure.ShardHeader{
+			Version:       1,           // current header version
+			HeaderSize:    0,           // let encoder fill (28)
+			PayloadLength: uint64(n),   // payload length
+		})
+		if herr != nil {
+			copyErr = herr
+		} else {
+			headerBytes = hdr
+			if _, err := tmp.Seek(0, 0); err != nil {
+				copyErr = err
+			} else if _, err := tmp.Write(headerBytes); err != nil {
+				copyErr = err
+			} else if err := tmp.Sync(); err != nil {
+				copyErr = err
+			}
+		}
+	}
+
+	// Close temp and handle errors
 	if cerr := tmp.Close(); copyErr == nil && cerr != nil {
 		copyErr = cerr
 	}
@@ -90,21 +225,79 @@ func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (str
 		return "", n, copyErr
 	}
 
-	// Atomic rename to final path
-	if err := os.Rename(tmpName, path); err != nil {
+	finalPath := filepath.Join(odir, "data.ss1")
+	if err := os.Rename(tmpName, finalPath); err != nil {
 		l.observe("put", n, err, start)
 		return "", n, err
 	}
 
-	etag := hex.EncodeToString(h.Sum(nil))
-	// best-effort set mtime as last-modified
-	_ = os.Chtimes(path, time.Now(), time.Now())
+	etag := hex.EncodeToString(md.Sum(nil))
+	// Best-effort timestamp
+	_ = os.Chtimes(finalPath, time.Now(), time.Now())
+
+	// Extract CRCs from encoded header/footer
+	var headerCRC32C uint32
+	var footerCRC32C uint32
+	if len(headerBytes) >= 4 {
+		headerCRC32C = binary.LittleEndian.Uint32(headerBytes[len(headerBytes)-4:])
+	}
+	if len(footerBytes) >= 4 {
+		footerCRC32C = binary.LittleEndian.Uint32(footerBytes[len(footerBytes)-4:])
+	}
+
+	// Persist manifest atomically
+	shardRel := filepath.ToSlash(filepath.Join("objects", bucket, cleanKey, "data.ss1"))
+	shard := ShardMeta{
+		Path:            shardRel,
+		ContentHashAlgo: "sha256",
+		ContentHashHex:  hex.EncodeToString(sum32[:]),
+		PayloadLength:   n,
+		HeaderCRC32C:    headerCRC32C,
+		FooterCRC32C:    footerCRC32C,
+	}
+	man := NewSingleShardManifest(bucket, key, n, etag, RSParams{K: 1, M: 0}, shard)
+	if err := SaveManifest(ctx, l.base, bucket, key, man); err != nil {
+		// Roll back the data file to keep invariant: no data without manifest.
+		_ = os.Remove(finalPath)
+		l.observe("put", n, err, start)
+		return "", n, err
+	}
+
 	l.observe("put", n, nil, start)
 	return etag, n, nil
 }
 
 func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, int64, string, time.Time, error) {
 	start := time.Now()
+
+	// Sealed-mode read: prefer manifest + sealed shard if present
+	if m, err := LoadManifest(ctx, l.base, bucket, key); err == nil && m != nil && len(m.Shards) > 0 {
+		shard := m.Shards[0]
+		sp := filepath.Join(l.base, filepath.FromSlash(shard.Path))
+		f, err := os.Open(sp)
+		if err != nil {
+			l.observe("get", 0, err, start)
+			return nil, 0, "", time.Time{}, err
+		}
+		// Decode header to obtain payload offset/length
+		if _, err := f.Seek(0, 0); err != nil {
+			_ = f.Close()
+			l.observe("get", 0, err, start)
+			return nil, 0, "", time.Time{}, err
+		}
+		hdr, err := erasure.DecodeShardHeader(f)
+		if err != nil {
+			_ = f.Close()
+			l.observe("get", 0, err, start)
+			return nil, 0, "", time.Time{}, err
+		}
+		size := int64(hdr.PayloadLength)
+		rc := &sectionReadCloser{sr: io.NewSectionReader(f, int64(hdr.HeaderSize), size), f: f}
+		l.observe("get", size, nil, start)
+		return rc, size, m.ETag, m.LastModified, nil
+	}
+
+	// Fallback: plain file object
 	path, err := l.objectPath(bucket, key)
 	if err != nil { l.observe("get", 0, err, start); return nil, 0, "", time.Time{}, err }
 	st, err := os.Stat(path)
@@ -119,6 +312,14 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 
 func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, time.Time, error) {
 	start := time.Now()
+
+	// Sealed object: read from manifest if present
+	if m, err := LoadManifest(ctx, l.base, bucket, key); err == nil && m != nil && len(m.Shards) > 0 {
+		l.observe("head", 0, nil, start)
+		return m.Size, m.ETag, m.LastModified, nil
+	}
+
+	// Fallback: plain file
 	path, err := l.objectPath(bucket, key)
 	if err != nil { l.observe("head", 0, err, start); return 0, "", time.Time{}, err }
 	st, err := os.Stat(path)
@@ -131,6 +332,23 @@ func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, 
 
 func (l *LocalFS) Delete(ctx context.Context, bucket, key string) error {
 	start := time.Now()
+
+	// Try sealed object deletion first (manifest-driven)
+	if m, err := LoadManifest(ctx, l.base, bucket, key); err == nil && m != nil && len(m.Shards) > 0 {
+		shard := m.Shards[0]
+		sp := filepath.Join(l.base, filepath.FromSlash(shard.Path))
+		_ = os.Remove(sp) // ignore error; proceed to remove manifest
+		if mp, err := manifestPath(l.base, bucket, key); err == nil {
+			_ = os.Remove(mp)
+		}
+		cleanKey := strings.TrimPrefix(filepath.Clean("/"+key), "/")
+		// Best-effort: remove object directory if empty
+		_ = removeEmptyParents(filepath.Join(l.base, "objects", bucket, cleanKey), filepath.Join(l.base, "objects", bucket))
+		l.observe("delete", 0, nil, start)
+		return nil
+	}
+
+	// Fallback: plain file deletion
 	path, err := l.objectPath(bucket, key)
 	if err != nil { l.observe("delete", 0, err, start); return err }
 	if err := os.Remove(path); err != nil {
@@ -155,36 +373,56 @@ func (l *LocalFS) List(ctx context.Context, bucket, prefix, startAfter string, m
 			return err
 		}
 		if d.IsDir() { return nil }
- 		
-		// Extract relative key from path
+  		
+		// Extract relative path from bucket dir
 		rel, err := filepath.Rel(bdir, path)
 		if err != nil { return err }
-		key := filepath.ToSlash(rel)
+		relSlash := filepath.ToSlash(rel)
 
 		// Skip internal multipart temp files (never list these)
-		if strings.HasPrefix(key, ".multipart/") { return nil }
- 		
-		// Apply prefix filter
+		if strings.HasPrefix(relSlash, ".multipart/") { return nil }
+
+		name := d.Name()
+		// Skip manifest files themselves
+		if name == ManifestFilename { return nil }
+
+		// Sealed object file: data.ss1 maps to object key = parent directory
+		if name == "data.ss1" {
+			objKey := filepath.ToSlash(filepath.Dir(rel))
+			// Apply filters
+			if prefix != "" && !strings.HasPrefix(objKey, prefix) { return nil }
+			if startAfter != "" && objKey <= startAfter { return nil }
+			// Load manifest for metadata (ETag, size, last modified)
+			m, merr := LoadManifest(ctx, l.base, bucket, objKey)
+			if merr != nil || m == nil {
+				// If manifest missing, skip inconsistent sealed object
+				return nil
+			}
+			objects = append(objects, ObjectMeta{
+				Key:          objKey,
+				Size:         m.Size,
+				ETag:         m.ETag,
+				LastModified: m.LastModified,
+			})
+			return nil
+		}
+
+		// Plain file object
+		key := relSlash
+		// Apply filters
 		if prefix != "" && !strings.HasPrefix(key, prefix) { return nil }
- 		
-		// Apply startAfter filter
 		if startAfter != "" && key <= startAfter { return nil }
- 		
-		// Get file info
 		info, err := d.Info()
 		if err != nil { return err }
- 		
-		// Compute ETag
 		etag, err := md5File(path)
 		if err != nil { return err }
- 		
 		objects = append(objects, ObjectMeta{
 			Key:          key,
 			Size:         info.Size(),
 			ETag:         etag,
 			LastModified: info.ModTime().UTC(),
 		})
- 		
+  		
 		return nil
 	})
  	
