@@ -78,9 +78,12 @@ type SealedConfig struct {
 
 // ScrubberConfig controls background integrity scrubbing (experimental).
 type ScrubberConfig struct {
-	Enabled     bool   `yaml:"enabled"`               // disabled by default
-	Interval    string `yaml:"interval,omitempty"`    // e.g., "1h"
-	Concurrency int    `yaml:"concurrency,omitempty"` // number of parallel workers (noop uses value)
+	Enabled       bool   `yaml:"enabled"`                 // disabled by default
+	Interval      string `yaml:"interval,omitempty"`      // e.g., "1h"
+	Concurrency   int    `yaml:"concurrency,omitempty"`   // number of parallel workers
+	// VerifyPayload, when set, controls whether the scrubber recomputes sha256(payload).
+	// When nil (unset), the scrubber inherits Sealed.VerifyOnRead.
+	VerifyPayload *bool  `yaml:"verifyPayload,omitempty"`
 }
  
 // GCConfig controls periodic garbage-collection of stale multipart uploads.
@@ -304,6 +307,17 @@ func applyEnvOverrides(cfg Config) Config {
 	if v := os.Getenv("SHARDSEAL_SCRUBBER_CONCURRENCY"); v != "" {
 		if x, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && x > 0 {
 			cfg.Scrubber.Concurrency = x
+		}
+	}
+	// Independent payload verification toggle; when unset, inherits sealed.verifyOnRead
+	if v := os.Getenv("SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			b := true
+			cfg.Scrubber.VerifyPayload = &b
+		case "0", "false", "no", "n", "off":
+			b := false
+			cfg.Scrubber.VerifyPayload = &b
 		}
 	}
 	

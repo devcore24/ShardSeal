@@ -132,6 +132,10 @@ Notes:
   - shardseal_storage_sealed_ops_total{op,sealed,result,integrity_fail}
   - shardseal_storage_sealed_op_duration_seconds_bucket/sum/count{op,sealed,integrity_fail}
   - shardseal_storage_integrity_failures_total{op}
+  - shardseal_scrubber_scanned_total
+  - shardseal_scrubber_errors_total
+  - shardseal_scrubber_last_run_timestamp_seconds
+  - shardseal_scrubber_uptime_seconds
 - Example:
 ```bash
 curl -s http://localhost:8080/metrics | head -n 20
@@ -146,6 +150,7 @@ curl -s http://localhost:8080/metrics | head -n 20
 - Prometheus sample config: configs/monitoring/prometheus/prometheus.yml
 - Example alert rules: configs/monitoring/prometheus/rules.yml
 - Grafana dashboard (import JSON): configs/monitoring/grafana/shardseal_overview.json
+- Includes sealed I/O metrics and scrubber metrics (scanned/errors/last_run/uptime). The server polls scrubber stats every 10s and exports to the main registry.
 
 Quick start:
 ```bash
@@ -238,9 +243,10 @@ Environment overrides:
 - SHARDSEAL_TRACING_KEY_HASH       // "true"/"false"; when true, emit s3.key_hash (sha256 first 8 bytes hex of object key)
 - SHARDSEAL_SEALED_ENABLED         // "true"/"false" to store objects using sealed format (experimental)
 - SHARDSEAL_SEALED_VERIFY_ON_READ  // "true"/"false" to verify integrity on GET/HEAD
-- SHARDSEAL_SCRUBBER_ENABLED       // "true"/"false" to enable background scrubber (no-op implementation)
+- SHARDSEAL_SCRUBBER_ENABLED       // "true"/"false" to enable background scrubber
 - SHARDSEAL_SCRUBBER_INTERVAL      // e.g., "1h"
 - SHARDSEAL_SCRUBBER_CONCURRENCY   // e.g., "2"
+- SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD // "true"/"false" to force payload re-hash verification (overrides sealed.verifyOnRead inheritance)
 - SHARDSEAL_GC_ENABLED             // "true"/"false" to enable multipart GC
 - SHARDSEAL_GC_INTERVAL            // e.g., "15m"
 - SHARDSEAL_GC_OLDER_THAN          // e.g., "24h"

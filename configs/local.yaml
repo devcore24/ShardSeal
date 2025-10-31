@@ -98,14 +98,16 @@ limits:
 
 
 # Integrity Scrubber (experimental)
-# Background integrity scrubbing is disabled by default. The current implementation is a no-op scrubber
-# that simulates scanning to validate wiring and metrics. In future versions this will verify sealed
-# object integrity and attempt self-healing.
+# Background integrity scrubbing verifies sealed header/footer CRCs and compares footer content-hash to the manifest.
+# When payload verification is enabled, the scrubber also recomputes sha256(payload). By default, payload verification
+# inherits sealed.verifyOnRead; set scrubber.verifyPayload to override explicitly.
 # Environment overrides:
 #   SHARDSEAL_SCRUBBER_ENABLED=true
 #   SHARDSEAL_SCRUBBER_INTERVAL=1h
 #   SHARDSEAL_SCRUBBER_CONCURRENCY=2
+#   SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD=true   # overrides inheritance from sealed.verifyOnRead
 scrubber:
   enabled: false
   interval: "1h"
   concurrency: 1
+  # verifyPayload: true   # uncomment to force payload re-hash verification (true/false). When omitted, inherits sealed.verifyOnRead.

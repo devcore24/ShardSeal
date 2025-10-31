@@ -129,6 +129,7 @@ func main() {
 	var adminSrv *http.Server
 	var gcStop context.CancelFunc
 	var scrub repair.Scrubber
+	var scrubPollStop func()
 	if cfg.AdminAddress != "" {
 		adminMux := http.NewServeMux()
 		// /admin/health: reports liveness and readiness along with version and listen address
@@ -169,14 +170,22 @@ func main() {
 			if concurrency <= 0 {
 				concurrency = 1
 			}
+			// Determine scrubber payload verification: explicit config overrides sealed.verifyOnRead
+			verifyPayload := cfg.Sealed.VerifyOnRead
+			if cfg.Scrubber.VerifyPayload != nil {
+				verifyPayload = *cfg.Scrubber.VerifyPayload
+			}
 			ss := repair.NewSealedScrubber(cfg.DataDirs, repair.Config{
 				Interval:      interval,
 				Concurrency:   concurrency,
-				VerifyPayload: cfg.Sealed.VerifyOnRead,
+				VerifyPayload: verifyPayload,
 			})
 			// Start in background
 			_ = ss.Start(context.Background())
 			scrub = ss
+			// Expose scrubber metrics on main registry and poll periodically
+			smScr := metrics.NewScrubberMetrics(m.Registry())
+			scrubPollStop = smScr.StartPolling(scrub, 10*time.Second)
 		}
 		adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
 		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
@@ -298,6 +307,10 @@ if gcStop != nil {
 // Stop scrubber if running
 if scrub != nil {
 	_ = scrub.Stop(ctx)
+}
+// Stop scrubber metrics poller
+if scrubPollStop != nil {
+	scrubPollStop()
 }
 // Shutdown tracing provider
 if err := traceShutdown(ctx); err != nil {
