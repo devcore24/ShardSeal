@@ -239,3 +239,149 @@ func TestLocalFS_Sealed_ListAndDelete(t *testing.T) {
 		t.Fatalf("sealed shard still present after delete")
 	}
 }
+// Additional sealed-mode hardening tests
+
+func TestLocalFS_Sealed_HeaderCRC_Corruption(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := t.TempDir()
+
+	lfs, err := NewLocalFS([]string{base})
+	if err != nil {
+		t.Fatalf("NewLocalFS: %v", err)
+	}
+	// verifyOnRead=false is fine because header CRC is always validated by DecodeShardHeader
+	lfs.SetSealed(true, false)
+
+	const bucket = "bkt"
+	const key = "hdrcrc.bin"
+	payload := bytes.Repeat([]byte{0xAB}, 4096)
+	if _, _, err := lfs.Put(ctx, bucket, key, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	shard := filepath.Join(lfs.base, "objects", bucket, filepath.FromSlash(key), "data.ss1")
+	f, err := os.OpenFile(shard, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open shard: %v", err)
+	}
+	// Flip a bit in the stored CRC32C in header (last 4 bytes of 28-byte header)
+	const headerSize = 28
+	if _, err := f.Seek(headerSize-4, io.SeekStart); err != nil {
+		_ = f.Close()
+		t.Fatalf("seek header crc: %v", err)
+	}
+	crc := make([]byte, 4)
+	if _, err := io.ReadFull(f, crc); err != nil {
+		_ = f.Close()
+		t.Fatalf("read header crc: %v", err)
+	}
+	crc[0] ^= 0xFF
+	if _, err := f.Seek(headerSize-4, io.SeekStart); err != nil {
+		_ = f.Close()
+		t.Fatalf("seek header crc back: %v", err)
+	}
+	if _, err := f.Write(crc); err != nil {
+		_ = f.Close()
+		t.Fatalf("write header crc: %v", err)
+	}
+	_ = f.Close()
+
+	// Now any sealed GET should fail due to header CRC mismatch during DecodeShardHeader
+	if _, _, _, _, err := lfs.Get(ctx, bucket, key); err == nil {
+		t.Fatalf("expected error on Get after header CRC corruption, got nil")
+	}
+}
+
+func TestLocalFS_Sealed_TruncatedPayload_VerifyOnRead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := t.TempDir()
+
+	lfs, err := NewLocalFS([]string{base})
+	if err != nil {
+		t.Fatalf("NewLocalFS: %v", err)
+	}
+	lfs.SetSealed(true, true) // enable verify-on-read
+
+	const bucket = "bkt"
+	const key = "trunc.bin"
+	payload := bytes.Repeat([]byte("P"), 10*1024)
+	if _, _, err := lfs.Put(ctx, bucket, key, bytes.NewReader(payload)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Truncate away the footer entirely (leave header+payload only)
+	shard := filepath.Join(lfs.base, "objects", bucket, filepath.FromSlash(key), "data.ss1")
+	f, err := os.OpenFile(shard, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open shard: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		t.Fatalf("seek: %v", err)
+	}
+	hdr, err := erasure.DecodeShardHeader(f)
+	if err != nil {
+		_ = f.Close()
+		t.Fatalf("decode header: %v", err)
+	}
+	_ = f.Close()
+	footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
+	if err := os.Truncate(shard, footerOff); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	// Get should fail with ErrIntegrity because footer cannot be decoded
+	if _, _, _, _, err := lfs.Get(ctx, bucket, key); err == nil {
+		t.Fatalf("expected integrity error on Get with truncated footer, got nil")
+	} else if err != ErrIntegrity {
+		t.Fatalf("expected ErrIntegrity on truncated footer, got %v", err)
+	}
+}
+
+func TestLocalFS_List_MixedSealedPlain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := t.TempDir()
+
+	lfs, err := NewLocalFS([]string{base})
+	if err != nil {
+		t.Fatalf("NewLocalFS: %v", err)
+	}
+
+	const bucket = "bkt"
+	// Sealed object a.txt
+	lfs.SetSealed(true, false)
+	a := []byte("sealed-a")
+	if _, _, err := lfs.Put(ctx, bucket, "a.txt", bytes.NewReader(a)); err != nil {
+		t.Fatalf("Put sealed a.txt: %v", err)
+	}
+	// Plain object b.txt
+	lfs.SetSealed(false, false)
+	b := []byte("plain-b")
+	if _, _, err := lfs.Put(ctx, bucket, "b.txt", bytes.NewReader(b)); err != nil {
+		t.Fatalf("Put plain b.txt: %v", err)
+	}
+
+	// List: expect both keys present, ordered, with correct sizes and etags
+	objs, truncated, err := lfs.List(ctx, bucket, "", "", 100)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if truncated {
+		t.Fatalf("unexpected truncation")
+	}
+	if len(objs) != 2 {
+		t.Fatalf("expected 2 objects, got %d: %+v", len(objs), objs)
+	}
+	if objs[0].Key != "a.txt" || objs[1].Key != "b.txt" {
+		t.Fatalf("unexpected order: %+v", objs)
+	}
+	if objs[0].Size != int64(len(a)) || objs[1].Size != int64(len(b)) {
+		t.Fatalf("size mismatch: %+v", objs)
+	}
+	if objs[0].ETag != md5hex(a) || objs[1].ETag != md5hex(b) {
+		t.Fatalf("etag mismatch: %+v", objs)
+	}
+}

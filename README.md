@@ -111,14 +111,21 @@ docker compose down
 
 Notes:
 - The container user is a non-root user (app). Data and config are mounted under /home/app.
-- To enable Admin API, set adminAddress in the config file (see [configs/local.yaml](configs/local.yaml:1)).
+- To enable Admin API, configure adminAddress in the config or set SHARDSEAL_ADMIN_ADDR (see [configs/local.yaml](configs/local.yaml:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
 - Sealed mode can be enabled via:
   - YAML: sealed.enabled: true
   - Env: SHARDSEAL_SEALED_ENABLED=true
+- Integrity scrubber (experimental verification-only) can be enabled via:
+  - Env: SHARDSEAL_SCRUBBER_ENABLED=true
+  - Optional overrides:
+    - SHARDSEAL_SCRUBBER_INTERVAL=1h
+    - SHARDSEAL_SCRUBBER_CONCURRENCY=2
+    - SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD=true  # overrides sealed.verifyOnRead inheritance
 - Admin scrub endpoints (experimental, sealed integrity verification):
   - GET /admin/scrub/stats (RBAC: admin.read)
   - POST /admin/scrub/runonce (RBAC: admin.scrub)
-  - The scrubber verifies sealed headers/footers and compares footer content-hash to the manifest. Payload re-hash verification is enabled when sealed.verifyOnRead is true. Protect these with OIDC/RBAC as needed (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+  - The scrubber verifies sealed headers/footers and compares footer content-hash to the manifest. Payload re-hash verification is enabled when sealed.verifyOnRead is true (or forced via SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD). Protect these with OIDC/RBAC as needed (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+- The provided [docker-compose.yml](docker-compose.yml:1) includes commented environment toggles for sealed mode, scrubber, tracing, admin OIDC, and GC; uncomment to enable as needed.
 
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
@@ -163,6 +170,23 @@ prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
 # 3) Import Grafana dashboard JSON:
 #    configs/monitoring/grafana/shardseal_overview.json
 #    and set the Prometheus datasource accordingly.
+```
+
+Compose profile (optional monitoring stack):
+```bash
+# Bring up shardseal as usual (uses service 'shardseal')
+docker compose up --build -d
+
+# Bring up monitoring stack (Prometheus + Grafana) using the 'monitoring' profile
+docker compose --profile monitoring up -d
+
+# Access:
+# - ShardSeal (S3 plane): http://localhost:8080
+# - ShardSeal Admin (if enabled): http://localhost:9090
+# - Prometheus: http://localhost:9091
+# - Grafana: http://localhost:3000  (default admin/admin)
+#   Add Prometheus data source at http://prometheus:9090 and import the dashboard:
+#   configs/monitoring/grafana/shardseal_overview.json
 ```
 
 Tracing and S3 error headers

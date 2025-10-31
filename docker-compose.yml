@@ -11,14 +11,79 @@ services:
     environment:
       # Data-plane listen address
       - SHARDSEAL_ADDR=:8080
+      # Enable Admin API on a separate port
+      - SHARDSEAL_ADMIN_ADDR=:9090
       # Point to a mounted config file (optional)
       - SHARDSEAL_CONFIG=/config/config.yaml
-      # Example toggles (override as needed)
-      # - SHARDSEAL_SEALED_ENABLED=false
+
+      # Sealed mode (experimental)
+      # - SHARDSEAL_SEALED_ENABLED=true
       # - SHARDSEAL_SEALED_VERIFY_ON_READ=false
+
+      # Integrity Scrubber (experimental)
+      # - SHARDSEAL_SCRUBBER_ENABLED=true
+      # - SHARDSEAL_SCRUBBER_INTERVAL=1h
+      # - SHARDSEAL_SCRUBBER_CONCURRENCY=2
+      # - SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD=true   # overrides inheritance from sealed.verifyOnRead
+
+      # Admin OIDC (optional)
+      # - SHARDSEAL_OIDC_ENABLED=true
+      # - SHARDSEAL_OIDC_ISSUER=https://auth.example.com/realms/dev
+      # - SHARDSEAL_OIDC_CLIENT_ID=s3free-admin
+      # - SHARDSEAL_OIDC_AUDIENCE=s3free-admin-api
+      # - SHARDSEAL_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
+      # - SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH=true
+      # - SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION=true
+
+      # Tracing (optional)
       # - SHARDSEAL_TRACING_ENABLED=false
+      # - SHARDSEAL_TRACING_ENDPOINT=otel-collector:4317
+      # - SHARDSEAL_TRACING_PROTOCOL=grpc
+      # - SHARDSEAL_TRACING_SAMPLE=0.1
+      # - SHARDSEAL_TRACING_SERVICE=shardseal-dev
+
+      # Multipart GC (optional)
       # - SHARDSEAL_GC_ENABLED=false
     volumes:
       - ./data:/home/app/data
       - ./configs:/config:ro
     restart: unless-stopped
+
+  # Optional monitoring stack (enable with: docker compose --profile monitoring up)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: shardseal-prometheus
+    profiles: ["monitoring"]
+    depends_on:
+      - shardseal
+    ports:
+      - "9091:9090"   # Prometheus UI (avoid conflict with shardseal admin on 9090)
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./configs/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./configs/monitoring/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prom_data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: shardseal-grafana
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"   # Grafana UI
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Add Prometheus datasource via UI (Settings -> Data sources), URL: http://prometheus:9090
+      # Optionally provision via mounted files if desired.
+    volumes:
+      # Optional: expose dashboard JSON for easy import via UI
+      - ./configs/monitoring/grafana/shardseal_overview.json:/var/lib/grafana/dashboards/shardseal_overview.json:ro
+    restart: unless-stopped
+
+volumes:
+  prom_data: {}

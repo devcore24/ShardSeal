@@ -589,3 +589,222 @@ This section captures planned control-plane capabilities (admin API/UI/CLI) and 
   - Phase C: Admin UI (SPA) + CLI; role-aware pages and commands
   - Phase D: Replication and backup end-to-end flows with audit trail
   - Phase E: Tracing, chaos tests for rebalance/drain; alerting rules and runbooks
+
+## Release Notes — Experimental Sealed Mode and Integrity Scrubber (2025-10-31)
+
+Scope
+- Introduces ShardSeal v1 “sealed” object layout (header | payload | footer) with per-object JSON manifest.
+- Adds optional integrity verification on read (verifyOnRead) and a background/admin-triggerable integrity scrubber (verification-only; no healing yet).
+- Extends observability with sealed I/O metrics, integrity-failure counters, and scrubber metrics. Provides Prometheus rules and a Grafana overview dashboard.
+- Maintains S3 compatibility (API surface unchanged; ETag = MD5 of full payload for both single PUT and multipart complete).
+
+Highlights
+- Storage
+  - LocalFS sealed write path: reserves header, streams payload while hashing, writes footer, then back-fills header, fsync+rename, and persists manifest.
+  - LocalFS sealed read path: prefers manifest; Range reads over payload via SectionReader; optional verifyOnRead re-hashes payload and checks footer.
+  - List/Delete aware of sealed layout; plain and sealed objects can coexist.
+- S3 API surface
+  - GET/HEAD map integrity failures to InternalError (500) and set X-S3-Error-Code=InternalError for observability.
+  - Range GET behaves consistently via ReadSeeker-backed reader.
+  - Multipart Complete uses streaming of staged parts; ETag policy is MD5 of the final combined object.
+- Integrity scrubber (verification-only)
+  - Admin endpoints: GET /admin/scrub/stats, POST /admin/scrub/runonce (RBAC: admin.read/admin.scrub).
+  - Walks manifests and verifies sealed shard header/footer CRCs and footer content hash; optional payload re-hash.
+  - Background mode via config; also supports ad-hoc runs via Admin API.
+- Observability
+  - Sealed storage metrics: ops, latency, integrity failures with low-cardinality labels.
+  - Scrubber metrics: shardseal_scrubber_scanned_total, errors_total, last_run_timestamp_seconds, uptime_seconds.
+  - Example Prometheus rules and Grafana dashboard provided.
+
+Configuration (YAML + env)
+- Sealed mode (experimental)
+  - YAML: 
+    - sealed.enabled: false
+    - sealed.verifyOnRead: false
+  - Env:
+    - SHARDSEAL_SEALED_ENABLED=true|false
+    - SHARDSEAL_SEALED_VERIFY_ON_READ=true|false
+- Integrity scrubber (experimental verification-only)
+  - YAML:
+    - scrubber.enabled: false
+    - scrubber.interval: "1h"
+    - scrubber.concurrency: 1
+    - scrubber.verifyPayload: (optional bool) when omitted, inherits sealed.verifyOnRead
+  - Env:
+    - SHARDSEAL_SCRUBBER_ENABLED=true|false
+    - SHARDSEAL_SCRUBBER_INTERVAL=1h
+    - SHARDSEAL_SCRUBBER_CONCURRENCY=2
+    - SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD=true|false
+
+Metrics (Prometheus)
+- HTTP
+  - shardseal_http_requests_total{method,code}
+  - shardseal_http_request_duration_seconds_bucket/sum/count{method,code}
+  - shardseal_http_inflight_requests
+- Storage (generic + sealed)
+  - shardseal_storage_bytes_total{op}
+  - shardseal_storage_ops_total{op,result}
+  - shardseal_storage_op_duration_seconds_bucket/sum/count{op}
+  - shardseal_storage_sealed_ops_total{op,sealed,result,integrity_fail}
+  - shardseal_storage_sealed_op_duration_seconds_bucket/sum/count{op,sealed,integrity_fail}
+  - shardseal_storage_integrity_failures_total{op}
+- Scrubber
+  - shardseal_scrubber_scanned_total
+  - shardseal_scrubber_errors_total
+  - shardseal_scrubber_last_run_timestamp_seconds
+  - shardseal_scrubber_uptime_seconds
+
+Monitoring assets
+- Prometheus:
+  - Config: configs/monitoring/prometheus/prometheus.yml
+  - Rules: configs/monitoring/prometheus/rules.yml
+- Grafana:
+  - Dashboard: configs/monitoring/grafana/shardseal_overview.json (includes sealed I/O and scrubber panels)
+
+Operational notes
+- Upgrade/migration
+  - Enabling sealed mode only affects new writes. Legacy plain files remain readable; mixed sealed/plain operation is supported.
+  - Disabling sealed mode does not delete or hide sealed objects (they continue to be served via their manifests).
+- ETag policy
+  - ETag remains MD5 of full payload for single-part and multipart-completed objects (not AWS multipart-style ETag with part count). A future option may allow alternative policies.
+- Performance guidance
+  - verifyOnRead and scrubber.verifyPayload introduce CPU and I/O overhead due to hashing and footer validation. Enable selectively based on latency and assurance requirements.
+  - Use Prometheus metrics to monitor integrity_failures_total and sealed ops integrity_fail ratios; adjust scrub cadence and verification strategy accordingly.
+
+Known limitations (current)
+- No self-healing yet (verification-only scrubber). Next milestone will add repair flows and rewrite support.
+- Sealed format is v1 and subject to change under semver pre-release policy; manifests are JSON with minimal fields for M1.
+
+Next steps
+- Implement self-healing on read and via scrub/repair queues.
+- Extend admin control plane for repair controls and progress reporting.
+- Harden sealed format testing (fuzzing, fault injection, truncated-corruption matrix) and add compaction/GC hooks.
+
+## Self-Healing (Design Draft) — RS Reconstruction, Read-Time Heal, Background Rewriter
+
+Goals
+- Detect and repair sealed shard corruption or loss automatically.
+- Preserve S3 compatibility and latency SLOs by prioritizing on-demand (read-time) heals for hot paths and scheduling background rewriters for cold paths.
+- Provide clear observability (metrics/tracing/logs) and safe, idempotent repair semantics.
+
+Scope (phase A)
+- M1 (single-shard per object, no parity) path will only detect and report; full RS requires k+m.
+- Introduce RS codec integration points and repair queue scaffolding without changing S3 API contracts.
+- Implement “read-time verification and repair stub” and “background scan and rewriter skeleton” wired behind config flags.
+
+Architecture Components
+- RepairQueue
+  - In-memory/work-queue interface with pluggable persistence later.
+  - Items: (bucket, key, shardPath, reason, discoveredAt, priority).
+  - Producers: read-time detection, scrubber verification, admin enqueue.
+  - Consumers: background rewriter workers (configurable concurrency).
+- Healer (Read-Time)
+  - Wraps storage GET path to detect integrity (already done) and enqueue repair when failures are transient or reconstructable.
+  - For M1: if payload can be read but footer mismatch detected, mark object as “needs rewrite”; S3 returns 500 to caller (until RS available).
+  - For RS k+m: attempt reconstruct(k of k+m), stream repaired data to client, enqueue rewrite.
+- Rewriter (Background)
+  - Worker loop that consumes RepairQueue items and executes repair plans:
+    - M1: rewrite sealed shard by re-encoding from canonical payload (if available) or skip.
+    - RS k+m: reconstruct missing/damaged shards from surviving shards using codec, write new sealed shard(s), update manifest generation.
+  - Idempotent: safe to retry; track generation numbers in manifest to avoid stale rewrites.
+- Codec Interface (RS)
+  - [erasure.Codec](pkg/erasure/rs.go:1) exists; add concrete codec (e.g., Reed-Solomon via a new package).
+  - Enhancements: streaming block encoder/decoder interfaces; block size, stripe size config.
+- Manifest Extensions
+  - Add generation/version per shard to support monotonic rewrite and race-safe updates.
+  - Optionally record integrity status and last repair timestamp.
+- Admin Control Plane (Phase B)
+  - Endpoints to list/inspect queue, pause/resume workers, trigger targeted repair, and show progress.
+  - RBAC roles: admin.repair.*.
+- Observability
+  - Metrics:
+    - shardseal_repair_queue_depth
+    - shardseal_repair_enqueued_total{reason}
+    - shardseal_repair_completed_total{result}
+    - shardseal_repair_duration_seconds_bucket/sum/count{mode, result}
+    - shardseal_heal_on_read_total{result}
+  - Tracing: attributes repair.reason, repair.result, storage.sealed=true during repair I/O operations.
+
+Data Flow (RS k+m future)
+1) Read-time detection:
+   - Decode header/footer; verify footer hash matches computed; if mismatch => integrity_fail.
+   - If RS enabled and enough good shards exist: reconstruct payload block(s) in memory; stream to client; enqueue repair(item: reason=read_heal).
+2) Background scrubber:
+   - Detect sealed shard with mismatch, enqueue repair(reason=scrub_fail).
+3) Background rewriter:
+   - Dequeue; for RS: choose target nodes; reconstruct missing/damaged shards; write sealed shard(s); update manifest shards with new generation and CRCs atomically.
+
+RepairQueue Interface (Draft)
+```go
+// Simple interface to decouple producers/consumers (backed by channel or persistent queue later).
+type RepairItem struct {
+    Bucket     string
+    Key        string
+    ShardPath  string // relative path for sealed shard
+    Reason     string // "read_heal" | "scrub_fail" | "admin"
+    Priority   int
+    Discovered time.Time
+}
+type RepairQueue interface {
+    Enqueue(ctx context.Context, it RepairItem) error
+    Dequeue(ctx context.Context) (RepairItem, error) // blocking
+    Len() int
+}
+```
+
+Config (Draft)
+```yaml
+# Healer
+healer:
+  enabled: true
+  maxConcurrent: 8        # bound read-time concurrent heal attempts
+  enqueueOnly: false      # when true, do not attempt read-time reconstruct, only enqueue
+
+# Repair workers
+repair:
+  enabled: false
+  concurrency: 2
+  backoff: "5s"
+  maxRetries: 5
+```
+Env overrides:
+- SHARDSEAL_HEALER_ENABLED, SHARDSEAL_HEALER_MAX_CONCURRENT, SHARDSEAL_HEALER_ENQUEUE_ONLY
+- SHARDSEAL_REPAIR_ENABLED, SHARDSEAL_REPAIR_CONCURRENCY, SHARDSEAL_REPAIR_BACKOFF, SHARDSEAL_REPAIR_MAX_RETRIES
+
+Failure Handling
+- Partial repair writes:
+  - Use temp files + fsync + atomic rename for repaired shards (same as put).
+  - Update manifest last — only after all shards safely written and verified.
+- Conflicts/races:
+  - Manifest generation increments per rewrite; consumers validate generation before apply.
+  - If generation mismatch on commit: re-enqueue with backoff.
+- Unavailable shards:
+  - For RS: if insufficient good shards, defer and alert; for M1: report and skip.
+
+Testing Strategy
+- Unit
+  - Queue semantics; repair planner from reasons; manifest generation rules; idempotency paths.
+- Integration
+  - Induce footer/hash mismatch, header CRC corruption, and shard delete scenarios; verify:
+    - read-time enqueue or heal (RS later), background rewriter behavior, metrics emission.
+- Chaos/Fault Injection
+  - Random I/O errors during rewrite; manifest update races; ensure no data loss and no stuck states.
+- Long-Run
+  - Scrub + repair loop on synthetic dataset; track repair debt burn-down; alert thresholds validation.
+
+Migration and Compatibility
+- Off by default; feature flags gate healer/repair.
+- Safe to roll out incrementally with verify-only scrubber active prior to enabling repair.
+- No S3 surface changes; healing transparent to clients (except read-time 500s in M1 where repair is not possible).
+
+Milestones
+- A1: Queue + producers + consumer skeleton; metrics; admin stubs (list/len).
+- A2: M1 rewriter no-op/warn; end-to-end metrics and idempotency validation.
+- B1: RS codec integration (k+m) with block streaming; reconstruct path + rewriter.
+- B2: Admin repair controls and progress endpoints; dashboards/alerts for repair.
+- C1: Persistent queue (KV) and compaction hooks; multi-node placement considerations.
+
+References
+- Storage and sealed format: [storage.localfs](pkg/storage/localfs.go:1), [erasure.rs](pkg/erasure/rs.go:1), [storage.manifest](pkg/storage/manifest.go:1)
+- Observability: [obs.metrics.storage](pkg/obs/metrics/storage.go:1), [obs.metrics.scrubber](pkg/obs/metrics/scrubber.go:1)
+- Admin control: [admin.scrubber](pkg/admin/scrubber.go:1), [cmd.shardseal.main](cmd/shardseal/main.go:1)
