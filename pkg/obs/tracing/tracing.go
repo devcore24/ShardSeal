@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -130,7 +129,8 @@ func Init(ctx context.Context, opt Options) (func(context.Context) error, error)
 
 // Middleware instruments incoming HTTP requests with a server span.
 // It skips common health/metrics paths to reduce noise.
-func Middleware(next http.Handler) http.Handler {
+// keyHashEnabled controls whether to emit s3.key_hash (sha256(key) first 8 bytes hex).
+func Middleware(next http.Handler, keyHashEnabled bool) http.Handler {
 	skipped := map[string]struct{}{
 		"/livez":   {},
 		"/readyz":  {},
@@ -179,10 +179,8 @@ func Middleware(next http.Handler) http.Handler {
 			span.SetAttributes(attribute.String("s3.error_code", ec))
 		}
 
-		// Optionally add s3.key_hash if enabled via env SHARDSEAL_TRACING_KEY_HASH.
-		// This avoids recording raw keys while still enabling correlation.
-		switch strings.ToLower(strings.TrimSpace(os.Getenv("SHARDSEAL_TRACING_KEY_HASH"))) {
-		case "1", "true", "yes", "y", "on":
+		// Optionally add s3.key_hash based on config toggle.
+		if keyHashEnabled {
 			p := strings.TrimPrefix(r.URL.Path, "/")
 			parts := strings.SplitN(p, "/", 2)
 			if len(parts) == 2 && parts[1] != "" {

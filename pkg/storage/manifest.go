@@ -31,6 +31,17 @@ type PartMeta struct {
 	ETag       string `json:"etag"`
 	BlockCount int    `json:"block_count"`
 }
+ 
+// ShardMeta describes a single sealed shard file in ShardSeal v1.
+// For M1 (single-shard path), an object typically has exactly one shard.
+type ShardMeta struct {
+	Path            string `json:"path"`              // relative to data root (e.g., objects/<bucket>/<key>/data.ss1)
+	ContentHashAlgo string `json:"content_hash_algo"` // e.g., "sha256", "blake3"
+	ContentHashHex  string `json:"content_hash_hex"`  // hex of content hash (payload only)
+	PayloadLength   int64  `json:"payload_length"`    // bytes of payload stored in shard
+	HeaderCRC32C    uint32 `json:"header_crc32c"`     // CRC of header
+	FooterCRC32C    uint32 `json:"footer_crc32c"`     // CRC of footer
+}
 
 // IntegrityInfo stores object-level integrity data.
 type IntegrityInfo struct {
@@ -51,6 +62,8 @@ type Manifest struct {
 	Parts        []PartMeta    `json:"parts,omitempty"`
 	RS           RSParams      `json:"rs_params"`
 	Integrity    IntegrityInfo `json:"integrity,omitempty"`
+	// Sealed shards composing this object (M1: typically 1)
+	Shards       []ShardMeta   `json:"shards,omitempty"`
 	// Future fields: placement, encryption, custom metadata, version IDs, etc.
 }
 
@@ -72,6 +85,21 @@ func (m *Manifest) ValidateBasic() error {
 		return errors.New("invalid RS params")
 	}
 	return nil
+}
+	
+// NewSingleShardManifest constructs a minimal v1 manifest for a single sealed shard.
+// RS parameters should reflect current encoding (M1: K=1, M=0).
+func NewSingleShardManifest(bucket, key string, size int64, etag string, rs RSParams, shard ShardMeta) *Manifest {
+	return &Manifest{
+		Version:      ManifestFormatV1,
+		Bucket:       bucket,
+		Key:          key,
+		Size:         size,
+		ETag:         etag,
+		LastModified: time.Now().UTC(),
+		RS:           rs,
+		Shards:       []ShardMeta{shard},
+	}
 }
 
 // manifestPath returns the absolute path to the manifest file given a base data directory.

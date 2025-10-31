@@ -36,6 +36,9 @@ tracing:
   # Optional override for service.name resource attribute
   serviceName: "s3free"
 
+  # When true, emit s3.key_hash (sha256 of key, first 8 bytes hex) on spans.
+  # Env override: SHARDSEAL_TRACING_KEY_HASH=true
+  keyHashEnabled: false
 
 # Optional Admin API (read-only endpoints and admin tools)
 # Uncomment to enable a separate admin listener (e.g., for /admin/health, /admin/version, GC endpoint)

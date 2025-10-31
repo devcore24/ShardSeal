@@ -60,11 +60,12 @@ type StaticAccessKey struct {
 
 // TracingConfig controls OpenTelemetry tracing.
 type TracingConfig struct {
-	Enabled     bool    `yaml:"enabled"`
-	Endpoint    string  `yaml:"endpoint"`               // OTLP collector endpoint (host:port or URL)
-	Protocol    string  `yaml:"protocol,omitempty"`     // "grpc" (default) or "http"
-	SampleRatio float64 `yaml:"sampleRatio,omitempty"`  // 0.0 - 1.0
-	ServiceName string  `yaml:"serviceName,omitempty"`  // override service.name; default "s3free"
+	Enabled        bool    `yaml:"enabled"`
+	Endpoint       string  `yaml:"endpoint"`                  // OTLP collector endpoint (host:port or URL)
+	Protocol       string  `yaml:"protocol,omitempty"`        // "grpc" (default) or "http"
+	SampleRatio    float64 `yaml:"sampleRatio,omitempty"`     // 0.0 - 1.0
+	ServiceName    string  `yaml:"serviceName,omitempty"`     // override service.name; default "s3free"
+	KeyHashEnabled bool    `yaml:"keyHashEnabled,omitempty"`  // when true, emit s3.key_hash (sha256(key) first 8 bytes hex)
 }
 
 // GCConfig controls periodic garbage-collection of stale multipart uploads.
@@ -103,10 +104,11 @@ func Default() Config {
 		DataDirs:     []string{"./data"},
 		AuthMode:     "none",
 		Tracing: TracingConfig{
-			Enabled:     false,
-			Protocol:    "grpc",
-			SampleRatio: 0.0,
-			ServiceName: "s3free",
+			Enabled:        false,
+			Protocol:       "grpc",
+			SampleRatio:    0.0,
+			ServiceName:    "s3free",
+			KeyHashEnabled: false,
 		},
 		GC: GCConfig{
 			Enabled:   false,
@@ -234,6 +236,15 @@ func applyEnvOverrides(cfg Config) Config {
 	}
 	if v := os.Getenv("SHARDSEAL_TRACING_SERVICE"); v != "" {
 		cfg.Tracing.ServiceName = strings.TrimSpace(v)
+	}
+	// Enable s3.key_hash attribute on spans when set truthy
+	if v := os.Getenv("SHARDSEAL_TRACING_KEY_HASH"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.Tracing.KeyHashEnabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.Tracing.KeyHashEnabled = false
+		}
 	}
 
 	// Multipart GC overrides

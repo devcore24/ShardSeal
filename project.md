@@ -208,7 +208,7 @@ Compaction & GC
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
-## Current Status & Progress (Updated 2025-10-30)
+## Current Status & Progress (Updated 2025-10-31)
 
 ### Completed ✅
 - Project scaffold: modules, Makefile, CI
@@ -246,17 +246,16 @@ Compaction & GC
 - Admin package: factored multipart GC into pkg/admin with reusable RunMultipartGC and NewMultipartGCHandler
 - Tests added: OIDC middleware and RBAC unit tests; admin GC unit tests; go build/test passing
 - Tracing enrichment (2025-10-30):
-  - Added span attribute s3.error_code and optional s3.key_hash (enable via env SHARDSEAL_TRACING_KEY_HASH). Key hash uses sha256(key) truncated to 8 bytes (16 hex chars).
+  - Added span attribute s3.error_code and optional s3.key_hash (config: tracing.keyHashEnabled or env SHARDSEAL_TRACING_KEY_HASH). Key hash uses sha256(key) truncated to 8 bytes (16 hex chars).
   - S3 error responses now include header X-S3-Error-Code; tracing middleware reads it to set s3.error_code.
   - Tests validate X-S3-Error-Code presence on errors and absence on success; full test suite passing.
-  - README updated with new tracing attributes and environment flag.
+  - README and sample config updated; main wiring passes config flag into tracing middleware.
 
 ### Next Up 🚧
 1) ShardSeal v1 implementation: encoding path (headers/footers), checksum verification, manifest writer/reader
-2) Tracing guidance: sampling defaults and span attributes for storage operations
-3) Monitoring documentation and additional dashboards; production Alertmanager integration examples
-4) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
-5) Distributed metadata/placement: design notes for embedded Raft and consistent hashing ring
+2) Monitoring documentation and additional dashboards; production Alertmanager integration examples
+3) Admin UI/CLI planning: role-aware pages/commands and secure transport; basic read-only views
+4) Distributed metadata/placement: design notes for embedded Raft and consistent hashing ring
 
 ## Development Guide
 

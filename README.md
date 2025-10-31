@@ -13,10 +13,10 @@
   - Multipart uploads (initiate/upload-part/complete/abort)
   - Config (YAML + env), structured logging, CI
   - Prometheus metrics (/metrics) and HTTP instrumentation
-  - Tracing: OpenTelemetry scaffold (optional; OTLP gRPC/HTTP)
+  - Tracing: OpenTelemetry scaffold (optional; OTLP gRPC/HTTP); spans include s3.error_code; optional s3.key_hash via config
   - Authentication: AWS Signature V4 (optional; header and presigned URL)
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
-  - Admin API skeleton (optional, separate port): /admin/health, /admin/version
+  - Admin API (optional, separate port) with optional OIDC + RBAC: /admin/health, /admin/version; multipart GC endpoint (/admin/gc/multipart)
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
@@ -117,12 +117,13 @@ prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
 Tracing and S3 error headers
 - Server spans include: http.method, http.target, http.route, http.status_code, user_agent.original, net.peer.ip, http.server_duration_ms.
 - S3 attributes (low cardinality): s3.op, s3.bucket_present, s3.admin, s3.error. New: s3.error_code on failures; optional s3.key_hash when enabled.
-- Enable s3.key_hash via environment: SHARDSEAL_TRACING_KEY_HASH=true. The key hash is sha256(key) truncated to 8 bytes (16 hex chars).
+- Enable s3.key_hash via config (tracing.keyHashEnabled: true) or env (SHARDSEAL_TRACING_KEY_HASH=true). The key hash is sha256(key) truncated to 8 bytes (16 hex chars).
 - Error responses include the header X-S3-Error-Code mirroring the S3 error code for observability. This header is only set on error responses.
 
 Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart.
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
+- POST /admin/gc/multipart: run a single multipart GC pass (requires RBAC admin.gc; OIDC-protected if enabled)
 
 ## Configuration
 Example at configs/local.yaml:
@@ -147,7 +148,8 @@ dataDirs:
 #   endpoint: "localhost:4317"  # grpc default; or "localhost:4318" for http
 #   protocol: "grpc"            # "grpc" or "http"
 #   sampleRatio: 0.0            # 0.0-1.0
-#   serviceName: "shardseal"
+#   serviceName: "s3free"
+#   keyHashEnabled: false      # emit s3.key_hash; or set SHARDSEAL_TRACING_KEY_HASH=true
 ```
 
 Additional optional request size limits:
@@ -212,6 +214,11 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - Added liveness (/livez) and readiness (/readyz) endpoints; readiness gated after initialization
 - Fixed critical memory issues: streaming multipart completion; safe handling for non-seekable Range GET
 - Hid internal multipart files from listings and bucket-empty checks; normalized temp part layout
+
+## Recent Improvements (2025-10-30)
+- Tracing enrichment: error responses now set X-S3-Error-Code; tracing middleware records s3.error_code.
+- Optional s3.key_hash attribute on spans (sha256(key) truncated to 8 bytes hex), configurable via tracing.keyHashEnabled or env SHARDSEAL_TRACING_KEY_HASH=true.
+- README, sample config, and tests updated accordingly.
 
 ## Roadmap (short)
 1) ShardSeal v1 storage format + erasure coding

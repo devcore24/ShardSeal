@@ -1,6 +1,13 @@
 package erasure
 
-import "errors"
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
+	"io"
+)
 
 // Params describes Reed–Solomon (RS) erasure coding parameters for ShardSeal.
 // K = data shards, M = parity shards. BlockSize and StripeSize are advisory
@@ -85,4 +92,156 @@ func (c *NoopCodec) Reconstruct(shards [][]byte, missing []int) ([][]byte, error
 		}
 	}
 	return out, nil
+}
+
+// ShardSeal v1 sealed shard header/footer encoding (stream-friendly)
+
+// shardSealMagic identifies ShardSeal v1 in the header prefix.
+const shardSealMagic = "ShardSealv1"
+
+// shardHeaderVersion is the current header version.
+const shardHeaderVersion uint16 = 1
+
+var le = binary.LittleEndian
+var crcTable = crc32.MakeTable(crc32.Castagnoli)
+
+// ShardHeader is the minimal header for M1 (single-shard, no RS striping).
+// Layout on disk (little-endian):
+//   magic[12] | version:u16 | headerSize:u16 | payloadLen:u64 | headerCRC32C:u32
+type ShardHeader struct {
+	Version       uint16
+	HeaderSize    uint16
+	PayloadLength uint64
+}
+
+// ShardFooter is the minimal footer for M1.
+// Layout on disk:
+//   contentHash[32] (sha256 for M1) | footerCRC32C:u32
+type ShardFooter struct {
+	ContentHash [32]byte
+}
+
+// EncodeShardHeader returns the binary header including CRC32C.
+func EncodeShardHeader(h ShardHeader) ([]byte, error) {
+	// Compute headerSize if not set
+	if h.HeaderSize == 0 {
+		// 12 (magic) + 2 (ver) + 2 (size) + 8 (len) + 4 (crc) = 28
+		h.HeaderSize = 28
+	}
+	buf := new(bytes.Buffer)
+	// magic
+	if _, err := buf.Write([]byte(shardSealMagic)); err != nil {
+		return nil, err
+	}
+	// fields preceding CRC
+	if err := binary.Write(buf, le, h.Version); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, le, h.HeaderSize); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(buf, le, h.PayloadLength); err != nil {
+		return nil, err
+	}
+	crc := crc32.Checksum(buf.Bytes(), crcTable)
+	if err := binary.Write(buf, le, crc); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// DecodeShardHeader reads and verifies a header from r.
+func DecodeShardHeader(r io.Reader) (ShardHeader, error) {
+	var h ShardHeader
+	// read magic
+	magic := make([]byte, len(shardSealMagic))
+	if _, err := io.ReadFull(r, magic); err != nil {
+		return h, err
+	}
+	if string(magic) != shardSealMagic {
+		return h, errors.New("shard: invalid magic")
+	}
+	// buffer the remaining fixed fields to verify CRC
+	payload := new(bytes.Buffer)
+	// version, size, len
+	var ver uint16
+	var hsize uint16
+	var plen uint64
+	if err := binary.Read(r, le, &ver); err != nil {
+		return h, err
+	}
+	if err := binary.Read(r, le, &hsize); err != nil {
+		return h, err
+	}
+	if err := binary.Read(r, le, &plen); err != nil {
+		return h, err
+	}
+	// reconstruct bytes for CRC
+	payload.Write([]byte(shardSealMagic))
+	_ = binary.Write(payload, le, ver)
+	_ = binary.Write(payload, le, hsize)
+	_ = binary.Write(payload, le, plen)
+
+	// read stored crc
+	var stored uint32
+	if err := binary.Read(r, le, &stored); err != nil {
+		return h, err
+	}
+	computed := crc32.Checksum(payload.Bytes(), crcTable)
+	if stored != computed {
+		return h, errors.New("shard: header CRC32C mismatch")
+	}
+	h.Version = ver
+	h.HeaderSize = hsize
+	h.PayloadLength = plen
+	return h, nil
+}
+
+// EncodeShardFooter returns the binary footer including CRC32C.
+func EncodeShardFooter(contentHash [32]byte) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	if _, err := buf.Write(contentHash[:]); err != nil {
+		return nil, err
+	}
+	crc := crc32.Checksum(buf.Bytes(), crcTable)
+	if err := binary.Write(buf, le, crc); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// DecodeShardFooter reads and verifies a footer from r.
+func DecodeShardFooter(r io.Reader) (ShardFooter, error) {
+	var f ShardFooter
+	// read contentHash
+	if _, err := io.ReadFull(r, f.ContentHash[:]); err != nil {
+		return f, err
+	}
+	// buffer for CRC computation
+	payload := f.ContentHash[:]
+	var stored uint32
+	if err := binary.Read(r, le, &stored); err != nil {
+		return f, err
+	}
+	computed := crc32.Checksum(payload, crcTable)
+	if stored != computed {
+		return f, errors.New("shard: footer CRC32C mismatch")
+	}
+	return f, nil
+}
+
+// HashPayloadSHA256 streams from r and returns sha256 sum and bytes copied into w (if non-nil).
+// This is a helper for future wiring; safe to keep here for now.
+func HashPayloadSHA256(r io.Reader, w io.Writer) ([32]byte, int64, error) {
+	h := sha256.New()
+	var n int64
+	var err error
+	if w != nil {
+		n, err = io.Copy(io.MultiWriter(h, w), r)
+	} else {
+		n, err = io.Copy(h, r)
+	}
+	var sum [32]byte
+	copy(sum[:], h.Sum(nil))
+	return sum, n, err
 }

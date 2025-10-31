@@ -104,7 +104,7 @@ func main() {
 		slog.Info("sigv4 auth enabled")
 	}
 	// Tracing middleware
-	handler = tracing.Middleware(handler)
+	handler = tracing.Middleware(handler, cfg.Tracing.KeyHashEnabled)
 	// Instrument S3 API with HTTP metrics
 	handler = m.Middleware(handler)
 	mux.Handle("/", handler)
