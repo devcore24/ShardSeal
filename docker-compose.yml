@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  shardseal:
+    build: .
+    image: shardseal:dev
+    container_name: shardseal
+    ports:
+      - "8080:8080"   # S3 data-plane
+      - "9090:9090"   # Admin API (if enabled)
+    environment:
+      # Data-plane listen address
+      - SHARDSEAL_ADDR=:8080
+      # Point to a mounted config file (optional)
+      - SHARDSEAL_CONFIG=/config/config.yaml
+      # Example toggles (override as needed)
+      # - SHARDSEAL_SEALED_ENABLED=false
+      # - SHARDSEAL_SEALED_VERIFY_ON_READ=false
+      # - SHARDSEAL_TRACING_ENABLED=false
+      # - SHARDSEAL_GC_ENABLED=false
+    volumes:
+      - ./data:/home/app/data
+      - ./configs:/config:ro
+    restart: unless-stopped

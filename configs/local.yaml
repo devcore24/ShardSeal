@@ -95,3 +95,17 @@ oidc:
 limits:
   singlePutMaxBytes: 5368709120    # 5 GiB cap for single PUT
   minMultipartPartSize: 5242880    # 5 MiB minimum for non-final multipart parts
+
+
+# Integrity Scrubber (experimental)
+# Background integrity scrubbing is disabled by default. The current implementation is a no-op scrubber
+# that simulates scanning to validate wiring and metrics. In future versions this will verify sealed
+# object integrity and attempt self-healing.
+# Environment overrides:
+#   SHARDSEAL_SCRUBBER_ENABLED=true
+#   SHARDSEAL_SCRUBBER_INTERVAL=1h
+#   SHARDSEAL_SCRUBBER_CONCURRENCY=2
+scrubber:
+  enabled: false
+  interval: "1h"
+  concurrency: 1

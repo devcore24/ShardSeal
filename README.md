@@ -20,7 +20,7 @@
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented
-  - ShardSeal v1 self-healing format, erasure coding, background scrubber
+  - ShardSeal v1 self-healing: erasure coding and background scrubber (sealed I/O wired via feature flag; integrity verification optional; admin scrubber endpoints are present with a no-op scrubber)
   - Distributed metadata/placement
 
 ## Quick start
@@ -80,12 +80,58 @@ go test ./...
 go test ./pkg/api/s3 -v
 ```
 
+## Docker (dev)
+Two options are provided: local Docker build and docker-compose. The image exposes:
+- 8080: S3 data-plane (configurable via SHARDSEAL_ADDR)
+- 9090: Admin API (when adminAddress is configured)
+
+Build and run (Dockerfile)
+```bash
+# Build the image locally
+docker build -t shardseal:dev .
+
+# Run with a mounted data directory and config
+# Ensure your config mounts to /home/app/config/config.yaml or set SHARDSEAL_CONFIG accordingly.
+docker run --rm -p 8080:8080 -p 9090:9090 \
+  -v "$(pwd)/data:/home/app/data" \
+  -v "$(pwd)/configs:/home/app/config:ro" \
+  -e SHARDSEAL_CONFIG=/home/app/config/config.yaml \
+  --name shardseal shardseal:dev
+```
+
+Compose (docker-compose.yml)
+```bash
+# Up/Down
+docker compose up --build
+docker compose down
+
+# Override env from your shell or edit docker-compose.yml as needed.
+# Data is mounted at ./data, config at ./configs (read-only) by default.
+```
+
+Notes:
+- The container user is a non-root user (app). Data and config are mounted under /home/app.
+- To enable Admin API, set adminAddress in the config file (see [configs/local.yaml](configs/local.yaml:1)).
+- Sealed mode can be enabled via:
+  - YAML: sealed.enabled: true
+  - Env: SHARDSEAL_SEALED_ENABLED=true
+- Admin scrub endpoints (experimental, no-op scrubber):
+  - GET /admin/scrub/stats (RBAC: admin.read)
+  - POST /admin/scrub/runonce (RBAC: admin.scrub)
+  - Ensure Admin OIDC/RBAC is configured if you plan to protect these routes (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
-- Default counters and histograms:
+- Default counters and histograms include:
   - shardseal_http_requests_total{method,code}
   - shardseal_http_request_duration_seconds_bucket/sum/count{method,code}
   - shardseal_http_inflight_requests
+  - shardseal_storage_bytes_total{op}
+  - shardseal_storage_ops_total{op,result}
+  - shardseal_storage_op_duration_seconds_bucket/sum/count{op}
+  - shardseal_storage_sealed_ops_total{op,sealed,result,integrity_fail}
+  - shardseal_storage_sealed_op_duration_seconds_bucket/sum/count{op,sealed,integrity_fail}
+  - shardseal_storage_integrity_failures_total{op}
 - Example:
 ```bash
 curl -s http://localhost:8080/metrics | head -n 20
@@ -120,10 +166,14 @@ Tracing and S3 error headers
 - Enable s3.key_hash via config (tracing.keyHashEnabled: true) or env (SHARDSEAL_TRACING_KEY_HASH=true). The key hash is sha256(key) truncated to 8 bytes (16 hex chars).
 - Error responses include the header X-S3-Error-Code mirroring the S3 error code for observability. This header is only set on error responses.
 
-Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart.
+
+
+Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these endpoints require a valid Bearer token. RBAC defaults are enforced: admin.read for GET endpoints; admin.gc for POST /admin/gc/multipart; admin.scrub for POST /admin/scrub/runonce.
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
 - POST /admin/gc/multipart: run a single multipart GC pass (requires RBAC admin.gc; OIDC-protected if enabled)
+- /admin/scrub/stats: get current scrubber stats (requires RBAC admin.read)
+- POST /admin/scrub/runonce: trigger a single scrub pass (requires RBAC admin.scrub)
 
 ## Configuration
 Example at configs/local.yaml:
@@ -150,6 +200,17 @@ dataDirs:
 #   sampleRatio: 0.0            # 0.0-1.0
 #   serviceName: "s3free"
 #   keyHashEnabled: false      # emit s3.key_hash; or set SHARDSEAL_TRACING_KEY_HASH=true
+#
+# Sealed mode (experimental)
+# sealed:
+#   enabled: false
+#   verifyOnRead: false
+#
+# Integrity Scrubber (experimental - no-op implementation)
+# scrubber:
+#   enabled: false
+#   interval: "1h"
+#   concurrency: 1
 ```
 
 Additional optional request size limits:
@@ -173,6 +234,11 @@ Environment overrides:
 - SHARDSEAL_TRACING_SAMPLE         // 0.0 - 1.0
 - SHARDSEAL_TRACING_SERVICE        // service.name override
 - SHARDSEAL_TRACING_KEY_HASH       // "true"/"false"; when true, emit s3.key_hash (sha256 first 8 bytes hex of object key)
+- SHARDSEAL_SEALED_ENABLED         // "true"/"false" to store objects using sealed format (experimental)
+- SHARDSEAL_SEALED_VERIFY_ON_READ  // "true"/"false" to verify integrity on GET/HEAD
+- SHARDSEAL_SCRUBBER_ENABLED       // "true"/"false" to enable background scrubber (no-op implementation)
+- SHARDSEAL_SCRUBBER_INTERVAL      // e.g., "1h"
+- SHARDSEAL_SCRUBBER_CONCURRENCY   // e.g., "2"
 - SHARDSEAL_GC_ENABLED             // "true"/"false" to enable multipart GC
 - SHARDSEAL_GC_INTERVAL            // e.g., "15m"
 - SHARDSEAL_GC_OLDER_THAN          // e.g., "24h"
@@ -221,11 +287,11 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 - README, sample config, and tests updated accordingly.
 
 ## Recent Improvements (2025-10-31)
-- ShardSeal v1 scaffolding:
-  - Introduced sealed shard primitives: header/footer encode/decode with CRC32C, plus a streaming sha256 helper for payload hashing (see [erasure.rs](pkg/erasure/rs.go:1)).
-  - Extended manifest v1 with ShardMeta and a helper to build a single-shard manifest (see [storage.manifest](pkg/storage/manifest.go:1)).
-  - Added unit tests for header/footer round-trip and tamper detection (CRC mismatch) and hashing helper (see [erasure.rs_test](pkg/erasure/rs_test.go:1)).
-  - Note: sealed I/O is not yet wired into the S3 paths; this is a safe first milestone to validate format primitives.
+- ShardSeal v1 sealed mode (experimental, feature-flagged):
+  - LocalFS now writes sealed shard files (header | payload | footer) and persists a JSON manifest; Range GETs are served via a SectionReader. Delete/List are aware of sealed layout (see [storage.localfs](pkg/storage/localfs.go:1), [storage.manifest](pkg/storage/manifest.go:1)).
+  - Optional verifyOnRead validates footer CRC and sha256(payload) on GET/HEAD; integrity failures are mapped to 500 InternalError at the S3 layer (see [api.s3](pkg/api/s3/server.go:1)).
+  - Tests added for storage-level and S3-level sealed behavior including corruption detection (see [storage.localfs_sealed_test](pkg/storage/localfs_sealed_test.go:1), [api.s3.server_sealed_test](pkg/api/s3/server_sealed_test.go:1)).
+  - Observability: tracing annotates storage.sealed and storage.integrity_fail; Prometheus sealed I/O metrics added (see [obs.metrics.storage](pkg/obs/metrics/storage.go:1)).
 
 ## Roadmap (short)
 1) ShardSeal v1 storage format + erasure coding

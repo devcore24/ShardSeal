@@ -69,6 +69,10 @@ func DefaultAdminPolicy() Policy {
 			return []string{"admin.read"}
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/gc/multipart":
 			return []string{"admin.gc"}
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/scrub/stats":
+			return []string{"admin.read"}
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/scrub/runonce":
+			return []string{"admin.scrub"}
 		default:
 			// apply read requirement to other GET /admin endpoints as a conservative default
 			if r.Method == http.MethodGet && len(r.URL.Path) >= 7 && r.URL.Path[:7] == "/admin/" {

@@ -20,6 +20,7 @@ import (
 	adminoidc "shardseal/pkg/security/oidc"
 	"shardseal/pkg/security/sigv4"
 	"shardseal/pkg/storage"
+	"shardseal/pkg/repair"
 )
 
 var version = "0.0.1-dev"
@@ -127,6 +128,7 @@ func main() {
 	// Optional Admin server on separate port with read-only endpoints
 	var adminSrv *http.Server
 	var gcStop context.CancelFunc
+	var scrub repair.Scrubber
 	if cfg.AdminAddress != "" {
 		adminMux := http.NewServeMux()
 		// /admin/health: reports liveness and readiness along with version and listen address
@@ -154,6 +156,28 @@ func main() {
 		// POST /admin/gc/multipart?olderThan=24h
 		// Use shared admin package handler to run a single GC pass (best-effort).
 		adminMux.Handle("/admin/gc/multipart", adminpkg.NewMultipartGCHandler(store, objs))
+
+		// Scrubber admin endpoints (experimental): GET /admin/scrub/stats, POST /admin/scrub/runonce
+		// Create a noop scrubber when enabled by config.
+		if cfg.Scrubber.Enabled {
+			interval, ierr := time.ParseDuration(cfg.Scrubber.Interval)
+			if ierr != nil || interval <= 0 {
+				interval = time.Hour
+			}
+			concurrency := cfg.Scrubber.Concurrency
+			if concurrency <= 0 {
+				concurrency = 1
+			}
+			ns := repair.NewNoopScrubber(repair.Config{
+				Interval:    interval,
+				Concurrency: concurrency,
+			})
+			// Start in background; best-effort (noop is light).
+			_ = ns.Start(context.Background())
+			scrub = ns
+		}
+		adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
+		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
 
 						// Optionally protect Admin API with OIDC when enabled
 						adminHandler := http.Handler(adminMux)
@@ -268,6 +292,10 @@ if adminSrv != nil {
 // Stop background GC if running
 if gcStop != nil {
 	gcStop()
+}
+// Stop scrubber if running
+if scrub != nil {
+	_ = scrub.Stop(ctx)
 }
 // Shutdown tracing provider
 if err := traceShutdown(ctx); err != nil {

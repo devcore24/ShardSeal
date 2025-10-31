@@ -236,7 +236,11 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 	case http.MethodGet:
 		rc, size, etag, lastMod, err := s.objs.Get(r.Context(), bucket, key)
 		if err != nil {
-			writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
+			if errors.Is(err, storage.ErrIntegrity) {
+				writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
+			} else {
+				writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
+			}
 			return
 		}
 		defer rc.Close()
@@ -275,7 +279,11 @@ func (s *Server) handleObject(w http.ResponseWriter, r *http.Request, bucket, ke
 	case http.MethodHead:
 		size, etag, lastMod, err := s.objs.Head(r.Context(), bucket, key)
 		if err != nil {
-			writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
+			if errors.Is(err, storage.ErrIntegrity) {
+				writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
+			} else {
+				writeError(w, http.StatusNotFound, errCodeNoSuchKey, "The specified key does not exist.", r.URL.Path, "")
+			}
 			return
 		}
 		w.Header().Set("ETag", quoteETag(etag))

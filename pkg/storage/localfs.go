@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
@@ -15,11 +16,16 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	erasure "shardseal/pkg/erasure"
 )
 
- // LocalFS implements ObjectStore on a single local directory. Suitable for dev/MVP.
- type LocalFS struct {
+var ErrIntegrity = errors.New("sealed: integrity check failed")
+
+	// LocalFS implements ObjectStore on a single local directory. Suitable for dev/MVP.
+	type LocalFS struct {
  	base         string // absolute base directory
  	obs          storageObserver
  	sealedEnabled bool  // when true, write sealed shard files + manifest
@@ -60,6 +66,29 @@ func (l *LocalFS) SetSealed(enabled, verifyOnRead bool) {
 func (l *LocalFS) observe(op string, bytes int64, err error, start time.Time) {
 	if l != nil && l.obs != nil {
 		l.obs.Observe(op, bytes, err, time.Since(start))
+	}
+}
+
+ // observeSealed records generic metrics plus sealed dimensions when supported.
+func (l *LocalFS) observeSealed(op string, bytes int64, err error, start time.Time, sealed bool, integrityFail bool) {
+	if l != nil && l.obs != nil {
+		// base metrics
+		l.obs.Observe(op, bytes, err, time.Since(start))
+		// sealed-specific if available
+		type sealedObserver interface {
+			ObserveSealed(op string, bytes int64, err error, dur time.Duration, sealed bool, integrityFail bool)
+		}
+		if so, ok := l.obs.(sealedObserver); ok {
+			so.ObserveSealed(op, bytes, err, time.Since(start), sealed, integrityFail)
+		}
+	}
+}
+
+// annotateSpan adds attributes to the current span if recording.
+func annotateSpan(ctx context.Context, attrs ...attribute.KeyValue) {
+	span := trace.SpanFromContext(ctx)
+	if span != nil && span.IsRecording() {
+		span.SetAttributes(attrs...)
 	}
 }
 // sectionReadCloser wraps an io.SectionReader with a Close that closes the underlying file.
@@ -127,6 +156,11 @@ func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (str
 		etag := hex.EncodeToString(h.Sum(nil))
 		// best-effort set mtime as last-modified
 		_ = os.Chtimes(path, time.Now(), time.Now())
+		// tracing: annotate non-sealed put
+		annotateSpan(ctx,
+			attribute.Bool("storage.sealed", false),
+			attribute.String("storage.op", "put"),
+		)
 		l.observe("put", n, nil, start)
 		return etag, n, nil
 	}
@@ -263,7 +297,12 @@ func (l *LocalFS) Put(ctx context.Context, bucket, key string, r io.Reader) (str
 		return "", n, err
 	}
 
-	l.observe("put", n, nil, start)
+	// tracing: annotate sealed put
+	annotateSpan(ctx,
+		attribute.Bool("storage.sealed", true),
+		attribute.String("storage.op", "put"),
+	)
+	l.observeSealed("put", n, nil, start, true, false)
 	return etag, n, nil
 }
 
@@ -291,9 +330,90 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 			l.observe("get", 0, err, start)
 			return nil, 0, "", time.Time{}, err
 		}
+
+		// Optional integrity verification on read
+		if l.verifyOnRead {
+			// Read footer and verify CRC + manifest hash
+			footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
+			if _, err := f.Seek(footerOff, io.SeekStart); err != nil {
+				_ = f.Close()
+				l.observe("get", 0, err, start)
+				return nil, 0, "", time.Time{}, err
+			}
+			footer, err := erasure.DecodeShardFooter(f)
+			if err != nil {
+				_ = f.Close()
+				// tracing: integrity failure
+				annotateSpan(ctx,
+					attribute.Bool("storage.sealed", true),
+					attribute.Bool("storage.integrity_fail", true),
+					attribute.String("storage.op", "get"),
+				)
+				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
+				return nil, 0, "", time.Time{}, ErrIntegrity
+			}
+			// Compare footer content hash with manifest
+			wantBytes, derr := hex.DecodeString(shard.ContentHashHex)
+			if derr != nil || len(wantBytes) != len(footer.ContentHash) {
+				_ = f.Close()
+				annotateSpan(ctx,
+					attribute.Bool("storage.sealed", true),
+					attribute.Bool("storage.integrity_fail", true),
+					attribute.String("storage.op", "get"),
+				)
+				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
+				return nil, 0, "", time.Time{}, ErrIntegrity
+			}
+			if !bytes.Equal(wantBytes, footer.ContentHash[:]) {
+				_ = f.Close()
+				annotateSpan(ctx,
+					attribute.Bool("storage.sealed", true),
+					attribute.Bool("storage.integrity_fail", true),
+					attribute.String("storage.op", "get"),
+				)
+				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
+				return nil, 0, "", time.Time{}, ErrIntegrity
+			}
+			// Recompute payload sha256 to verify matches footer
+			if _, err := f.Seek(int64(hdr.HeaderSize), io.SeekStart); err != nil {
+				_ = f.Close()
+				l.observe("get", 0, err, start)
+				return nil, 0, "", time.Time{}, err
+			}
+			h := sha256.New()
+			if _, err := io.CopyN(h, f, int64(hdr.PayloadLength)); err != nil {
+				_ = f.Close()
+				annotateSpan(ctx,
+					attribute.Bool("storage.sealed", true),
+					attribute.Bool("storage.integrity_fail", true),
+					attribute.String("storage.op", "get"),
+				)
+				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
+				return nil, 0, "", time.Time{}, ErrIntegrity
+			}
+			var sum [32]byte
+			copy(sum[:], h.Sum(nil))
+			if !bytes.Equal(sum[:], footer.ContentHash[:]) {
+				_ = f.Close()
+				annotateSpan(ctx,
+					attribute.Bool("storage.sealed", true),
+					attribute.Bool("storage.integrity_fail", true),
+					attribute.String("storage.op", "get"),
+				)
+				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
+				return nil, 0, "", time.Time{}, ErrIntegrity
+			}
+		}
+
+		// Return a reader over the payload section
 		size := int64(hdr.PayloadLength)
 		rc := &sectionReadCloser{sr: io.NewSectionReader(f, int64(hdr.HeaderSize), size), f: f}
-		l.observe("get", size, nil, start)
+		// tracing: annotate sealed get success
+		annotateSpan(ctx,
+			attribute.Bool("storage.sealed", true),
+			attribute.String("storage.op", "get"),
+		)
+		l.observeSealed("get", size, nil, start, true, false)
 		return rc, size, m.ETag, m.LastModified, nil
 	}
 
@@ -315,6 +435,46 @@ func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, 
 
 	// Sealed object: read from manifest if present
 	if m, err := LoadManifest(ctx, l.base, bucket, key); err == nil && m != nil && len(m.Shards) > 0 {
+		// Optional light verification on HEAD: check footer CRC and hash matches manifest
+		if l.verifyOnRead {
+			shard := m.Shards[0]
+			sp := filepath.Join(l.base, filepath.FromSlash(shard.Path))
+			f, err := os.Open(sp)
+			if err != nil {
+				l.observe("head", 0, err, start)
+				return 0, "", time.Time{}, err
+			}
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				_ = f.Close()
+				l.observe("head", 0, err, start)
+				return 0, "", time.Time{}, err
+			}
+			hdr, err := erasure.DecodeShardHeader(f)
+			if err != nil {
+				_ = f.Close()
+				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				return 0, "", time.Time{}, ErrIntegrity
+			}
+			footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
+			if _, err := f.Seek(footerOff, io.SeekStart); err != nil {
+				_ = f.Close()
+				l.observe("head", 0, err, start)
+				return 0, "", time.Time{}, err
+			}
+			footer, err := erasure.DecodeShardFooter(f)
+			if err != nil {
+				_ = f.Close()
+				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				return 0, "", time.Time{}, ErrIntegrity
+			}
+			_ = f.Close()
+			// Compare footer content hash with manifest
+			wantBytes, derr := hex.DecodeString(shard.ContentHashHex)
+			if derr != nil || !bytes.Equal(wantBytes, footer.ContentHash[:]) {
+				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				return 0, "", time.Time{}, ErrIntegrity
+			}
+		}
 		l.observe("head", 0, nil, start)
 		return m.Size, m.ETag, m.LastModified, nil
 	}

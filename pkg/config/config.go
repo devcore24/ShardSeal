@@ -48,6 +48,7 @@ type Config struct {
 	Tracing      TracingConfig     `yaml:"tracing"`
 	Sealed       SealedConfig      `yaml:"sealed"`               // sealed I/O (ShardSeal v1) toggles
 	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
+	Scrubber     ScrubberConfig    `yaml:"scrubber"`            // integrity scrubber (experimental)
 	OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
 	Limits       LimitsConfig      `yaml:"limits"`              // S3 request size limits
 }
@@ -75,6 +76,13 @@ type SealedConfig struct {
 	VerifyOnRead bool `yaml:"verifyOnRead"`   // when true, verify footer/content hash during GET/HEAD
 }
 
+// ScrubberConfig controls background integrity scrubbing (experimental).
+type ScrubberConfig struct {
+	Enabled     bool   `yaml:"enabled"`               // disabled by default
+	Interval    string `yaml:"interval,omitempty"`    // e.g., "1h"
+	Concurrency int    `yaml:"concurrency,omitempty"` // number of parallel workers (noop uses value)
+}
+ 
 // GCConfig controls periodic garbage-collection of stale multipart uploads.
 type GCConfig struct {
 	Enabled   bool   `yaml:"enabled"`              // disabled by default
@@ -120,6 +128,11 @@ func Default() Config {
 		Sealed: SealedConfig{
 			Enabled:      false,
 			VerifyOnRead: false,
+		},
+		Scrubber: ScrubberConfig{
+			Enabled:     false,
+			Interval:    "1h",
+			Concurrency: 1,
 		},
 		GC: GCConfig{
 			Enabled:   false,
@@ -273,6 +286,24 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.Sealed.VerifyOnRead = true
 		case "0", "false", "no", "n", "off":
 			cfg.Sealed.VerifyOnRead = false
+		}
+	}
+
+	// Scrubber overrides
+	if v := os.Getenv("SHARDSEAL_SCRUBBER_ENABLED"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			cfg.Scrubber.Enabled = true
+		case "0", "false", "no", "n", "off":
+			cfg.Scrubber.Enabled = false
+		}
+	}
+	if v := os.Getenv("SHARDSEAL_SCRUBBER_INTERVAL"); v != "" {
+		cfg.Scrubber.Interval = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SHARDSEAL_SCRUBBER_CONCURRENCY"); v != "" {
+		if x, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && x > 0 {
+			cfg.Scrubber.Concurrency = x
 		}
 	}
 	
