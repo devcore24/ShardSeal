@@ -418,7 +418,7 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 3) Admin API hardening (OIDC/RBAC), monitoring assets (dashboards/alerts)
 
 ## License
-Apache-2.0
+AGPL-3.0-or-later
 
 ## Contributing
 Early-stage experimental project — contributions welcome, especially in areas of:

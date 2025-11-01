@@ -193,7 +193,7 @@ Compaction & GC
 - docs/: specs, ops guides, API notes
 
 ## Licensing & Governance
-- License: Apache-2.0 (permissive, community-friendly).
+- License: GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later).
 - Governance: maintainers + reviewers model; RFC process for format changes; versioned storage spec with migration tooling.
 
 ## Glossary
