@@ -29,8 +29,8 @@ services:
       # Admin OIDC (optional)
       # - SHARDSEAL_OIDC_ENABLED=true
       # - SHARDSEAL_OIDC_ISSUER=https://auth.example.com/realms/dev
-      # - SHARDSEAL_OIDC_CLIENT_ID=s3free-admin
-      # - SHARDSEAL_OIDC_AUDIENCE=s3free-admin-api
+      # - SHARDSEAL_OIDC_CLIENT_ID=shardseal-admin
+      # - SHARDSEAL_OIDC_AUDIENCE=shardseal-admin-api
       # - SHARDSEAL_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
       # - SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH=true
       # - SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION=true

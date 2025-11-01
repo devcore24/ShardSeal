@@ -4,7 +4,7 @@
 # ShardSeal - Open S3-compatible, self-healing object store written in Go.
 (Work in progress)
 
-Repository naming note: The module/repository path currently includes "s3free" while the project name is "ShardSeal". This temporary naming avoids disruptive renames during early development. File paths and imports (e.g., [go.mod](go.mod:1)) remain valid; documentation and UI use the ShardSeal name. The naming will be normalized in a future refactor.
+Repository naming note: The module path and repository are now "shardseal". Some historical references to "s3free" may remain in docs or sample configs; these will be cleaned up progressively. All imports and file paths (e.g., [go.mod](go.mod:1)) use shardseal.
 
 ## Project Status & Goals
 
@@ -254,7 +254,7 @@ dataDirs:
 #   endpoint: "localhost:4317"  # grpc default; or "localhost:4318" for http
 #   protocol: "grpc"            # "grpc" or "http"
 #   sampleRatio: 0.0            # 0.0-1.0
-#   serviceName: "s3free"
+#   serviceName: "shardseal"
 #   keyHashEnabled: false      # emit s3.key_hash; or set SHARDSEAL_TRACING_KEY_HASH=true
 #
 # Sealed mode (experimental)

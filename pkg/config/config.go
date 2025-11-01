@@ -12,7 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds runtime configuration for s3free.
+// Config holds runtime configuration for shardseal.
 //
 // YAML example:
 //   address: ":8080"
@@ -66,7 +66,7 @@ type TracingConfig struct {
 	Endpoint       string  `yaml:"endpoint"`                  // OTLP collector endpoint (host:port or URL)
 	Protocol       string  `yaml:"protocol,omitempty"`        // "grpc" (default) or "http"
 	SampleRatio    float64 `yaml:"sampleRatio,omitempty"`     // 0.0 - 1.0
-	ServiceName    string  `yaml:"serviceName,omitempty"`     // override service.name; default "s3free"
+	ServiceName    string  `yaml:"serviceName,omitempty"`     // override service.name; default "shardseal"
 	KeyHashEnabled bool    `yaml:"keyHashEnabled,omitempty"`  // when true, emit s3.key_hash (sha256(key) first 8 bytes hex)
 }
  
@@ -125,7 +125,7 @@ func Default() Config {
 			Enabled:        false,
 			Protocol:       "grpc",
 			SampleRatio:    0.0,
-			ServiceName:    "s3free",
+			ServiceName:    "shardseal",
 			KeyHashEnabled: false,
 		},
 		Sealed: SealedConfig{

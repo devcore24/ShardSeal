@@ -24,7 +24,7 @@ authMode: "none"  # "none" or "sigv4"
 #   SHARDSEAL_TRACING_ENDPOINT=localhost:4317   # for gRPC (default)
 #   SHARDSEAL_TRACING_PROTOCOL=grpc             # or "http"
 #   SHARDSEAL_TRACING_SAMPLE=0.1                # 10% sampling
-#   SHARDSEAL_TRACING_SERVICE=s3free-local
+#   SHARDSEAL_TRACING_SERVICE=shardseal-local
 tracing:
   enabled: false
   # For gRPC, typical endpoint is "localhost:4317"; for HTTP "localhost:4318"
@@ -34,7 +34,7 @@ tracing:
   # 0.0 - 1.0 sampling ratio. Use 1.0 for debugging only.
   sampleRatio: 0.0
   # Optional override for service.name resource attribute
-  serviceName: "s3free"
+  serviceName: "shardseal"
 
   # When true, emit s3.key_hash (sha256 of key, first 8 bytes hex) on spans.
   # Env override: SHARDSEAL_TRACING_KEY_HASH=true
@@ -72,8 +72,8 @@ gc:
 # Environment overrides:
 #   SHARDSEAL_OIDC_ENABLED=true
 #   SHARDSEAL_OIDC_ISSUER=https://auth.example.com/realms/dev
-#   SHARDSEAL_OIDC_CLIENT_ID=s3free-admin
-#   SHARDSEAL_OIDC_AUDIENCE=s3free-admin-api        # optional, overrides clientID
+#   SHARDSEAL_OIDC_CLIENT_ID=shardseal-admin
+#   SHARDSEAL_OIDC_AUDIENCE=shardseal-admin-api        # optional, overrides clientID
 #   SHARDSEAL_OIDC_JWKS_URL=https://auth.example.com/realms/dev/protocol/openid-connect/certs
 #   SHARDSEAL_OIDC_ALLOW_UNAUTH_HEALTH=true         # optional: allow unauthenticated /admin/health
 #   SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION=true        # optional: allow unauthenticated /admin/version

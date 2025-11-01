@@ -952,3 +952,38 @@ func TestMultipart_MinPartSize_EntityTooSmall(t *testing.T) {
 		t.Fatalf("expected S3 error code EntityTooSmall, got: %s", resp)
 	}
 }
+
+func TestSinglePut_ETagPolicy_MD5(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMemoryStore()
+	if err := meta.CreateBucket(ctx, "bkt"); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	objs := newMemStore()
+	s := New(meta, objs)
+	hs := s.Handler()
+
+	// 1) PUT object and verify ETag equals MD5(payload)
+	payload := "Hello, ETag!"
+	r := httptest.NewRequest(http.MethodPut, "/bkt/obj.txt", bytes.NewBufferString(payload))
+	w := httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	want := md5hex([]byte(payload))
+	if got := strings.Trim(w.Header().Get("ETag"), "\""); got != want {
+		t.Fatalf("ETag mismatch on PUT: got=%q want=%q (MD5 of full object)", got, want)
+	}
+
+	// 2) HEAD and verify ETag remains MD5(payload)
+	r = httptest.NewRequest(http.MethodHead, "/bkt/obj.txt", nil)
+	w = httptest.NewRecorder()
+	hs.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HEAD expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := strings.Trim(w.Header().Get("ETag"), "\""); got != want {
+		t.Fatalf("ETag mismatch on HEAD: got=%q want=%q (MD5 of full object)", got, want)
+	}
+}

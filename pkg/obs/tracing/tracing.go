@@ -25,7 +25,7 @@ type Options struct {
 	Endpoint    string  // OTLP collector endpoint (host:port or URL)
 	Protocol    string  // "grpc" (default) or "http"
 	SampleRatio float64 // 0.0 - 1.0
-	ServiceName string  // default "s3free"
+	ServiceName string  // default "shardseal"
 }
 
 // Init configures OpenTelemetry tracing based on Options and sets global providers.
@@ -42,7 +42,7 @@ func Init(ctx context.Context, opt Options) (func(context.Context) error, error)
 
 	svc := opt.ServiceName
 	if strings.TrimSpace(svc) == "" {
-		svc = "s3free"
+		svc = "shardseal"
 	}
 	res, err := resource.New(ctx,
 		resource.WithProcess(),
