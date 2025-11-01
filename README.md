@@ -1,9 +1,23 @@
 
 <img src="img/shardSeal_280x280.png" width="280">
 
-# ShardSeal
+# ShardSeal - Open S3-compatible, self-healing object store written in Go.
+(Work in progress)
 
-## Open S3-compatible, self-healing object store written in Go. Work in progress, not production-ready yet:
+Repository naming note: The module/repository path currently includes "s3free" while the project name is "ShardSeal". This temporary naming avoids disruptive renames during early development. File paths and imports (e.g., [go.mod](go.mod:1)) remain valid; documentation and UI use the ShardSeal name. The naming will be normalized in a future refactor.
+
+## Project Status & Goals
+
+### Current State
+This is an experimental project in early development, primarily designed for:
+- Understanding distributed storage system internals
+- Testing novel approaches to erasure coding and data placement algorithms
+- Learning S3 protocol implementation details
+- Experimenting with self-healing storage architectures
+
+**This is NOT production-ready software.**
+
+_______________
 
 - Implemented
   - S3 basics: ListBuckets (/), CreateBucket (PUT /{bucket}), DeleteBucket (DELETE /{bucket})
@@ -19,8 +33,8 @@
   - Admin API (optional, separate port) with optional OIDC + RBAC: /admin/health, /admin/version; multipart GC endpoint (/admin/gc/multipart)
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
-- Not yet implemented
-  - ShardSeal v1 self-healing: erasure coding and background scrubber (sealed I/O wired via feature flag; integrity verification optional; admin scrubber endpoints are present with a no-op scrubber)
+- Not yet implemented / in progress
+  - Self-healing (erasure coding and background rewriter): verification-only scrubber implemented (no healing yet); sealed I/O and integrity verification are available behind feature flags.
   - Distributed metadata/placement
 
 ## Quick start
@@ -204,6 +218,7 @@ Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these e
 - admin.scrub for POST /admin/scrub/runonce
 - admin.repair.read for GET /admin/repair/stats
 - admin.repair.enqueue for POST /admin/repair/enqueue
+- admin.repair.control for POST /admin/repair/worker/pause and /admin/repair/worker/resume
 
 - /admin/health: JSON status with ready/version/addresses
 - /admin/version: JSON version info
@@ -212,6 +227,9 @@ Admin endpoints (optional; if admin server enabled). If OIDC is enabled, these e
 - POST /admin/scrub/runonce: trigger a single scrub pass (requires RBAC admin.scrub)
 - /admin/repair/stats: current repair queue length (requires RBAC admin.repair.read)
 - POST /admin/repair/enqueue: enqueue a repair item (requires RBAC admin.repair.enqueue). Body JSON accepts RepairItem fields {bucket, key, shardPath, reason, priority}; discovered timestamp is auto-populated when omitted. The queue is in-memory in this release.
+- /admin/repair/worker/stats: repair worker status and counters (requires RBAC admin.repair.read)
+- POST /admin/repair/worker/pause: pause the repair worker (requires RBAC admin.repair.control)
+- POST /admin/repair/worker/resume: resume the repair worker (requires RBAC admin.repair.control)
 
 ## Configuration
 Example at configs/local.yaml:
@@ -342,11 +360,9 @@ Migration and compatibility
 - Disabling sealed mode does not delete existing sealed objects; they continue to be served via manifest. You can transition gradually and mix sealed/plain safely.
 - ETag policy: MD5 of full object payload is preserved for S3 compatibility (even in sealed mode). For CompleteMultipartUpload, the ETag is MD5 of the final combined object (not AWS multipart-style ETag with a dash and part count). This may become configurable in a future release.
 
-Admin endpoints (experimental)
-- Scrubber endpoints perform sealed integrity verification:
-  - GET /admin/scrub/stats
-  - POST /admin/scrub/runonce
-- The scrubber validates sealed headers/footers and manifest hash; optional payload re-hash is enabled when sealed.verifyOnRead is true. RBAC roles: admin.read for GET, admin.scrub for POST (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1)).
+Scrubber behavior
+- Performs sealed integrity verification: validates sealed headers/footers and footer content-hash against the manifest; optional payload re-hash when sealed.verifyOnRead is true.
+- See the Admin endpoints section above for routes and RBAC.
 ## Authentication (optional SigV4)
 - Disabled by default. Enable verification and provide credentials either via config or environment:
 ```bash
@@ -387,6 +403,17 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
   - Tests added for storage-level and S3-level sealed behavior including corruption detection (see [storage.localfs_sealed_test](pkg/storage/localfs_sealed_test.go:1), [api.s3.server_sealed_test](pkg/api/s3/server_sealed_test.go:1)).
   - Observability: tracing annotates storage.sealed and storage.integrity_fail; Prometheus sealed I/O metrics added (see [obs.metrics.storage](pkg/obs/metrics/storage.go:1)).
 
+## Recent Improvements (2025-11-01)
+- Admin repair control surface:
+  - Queue endpoints: GET /admin/repair/stats, POST /admin/repair/enqueue
+  - Worker endpoints: GET /admin/repair/worker/stats, POST /admin/repair/worker/pause, POST /admin/repair/worker/resume
+  - RBAC roles: admin.repair.read, admin.repair.enqueue, admin.repair.control
+- Observability:
+  - shardseal_repair_queue_depth metric with periodic polling
+  - Prometheus recording rules and alerts for repair queue depth
+  - Grafana panels for repair queue depth (stat and timeseries)
+- Documentation: Admin endpoints, RBAC roles, and monitoring sections updated to reflect current state.
+
 ## Roadmap (short)
 1) ShardSeal v1 storage format + erasure coding
 2) Background scrubber and self-healing
@@ -396,4 +423,10 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 Apache-2.0
 
 ## Contributing
-Early-stage project — issues and PRs welcome. Please keep code documented and tested.
+Early-stage experimental project — contributions welcome, especially in areas of:
+- Erasure coding implementations
+- Distributed systems algorithms
+- Storage integrity verification techniques
+- Performance optimizations
+
+Please keep code documented and tested. Note that the project structure and APIs may change significantly as the design evolves.

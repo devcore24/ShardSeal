@@ -208,7 +208,7 @@ Compaction & GC
 3) S3 basic endpoints + multipart; SigV4; metrics.
 4) Read-time repair; initial scrubber; docs and examples.
 
-## Current Status & Progress (Updated 2025-10-31)
+## Current Status & Progress (Updated 2025-11-01)
 
 ### Completed ✅
 - Project scaffold: modules, Makefile, CI
@@ -256,19 +256,26 @@ Compaction & GC
   - Unit tests for header/footer round-trip and tamper detection, and hashing helper in [erasure.rs_test](pkg/erasure/rs_test.go:1); test suite green.
   - Sealed I/O wired into LocalFS and S3 paths (feature-flagged via sealed.enabled; sealed.verifyOnRead optional). Writes produce data.ss1 plus manifest; reads prefer manifest; integrity failures mapped to 500 with X-S3-Error-Code; tracing annotates storage.sealed and storage.integrity_fail; sealed metrics emitted. See [storage.localfs](pkg/storage/localfs.go:1), [api.s3](pkg/api/s3/server.go:1), [obs.metrics.storage](pkg/obs/metrics/storage.go:1).
   - Admin scrubber endpoints wired with no-op scrubber and RBAC: GET /admin/scrub/stats, POST /admin/scrub/runonce (see [admin.scrubber](pkg/admin/scrubber.go:1), [security.oidc.rbac](pkg/security/oidc/rbac.go:1), [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+  
+  Updates (2025-11-01)
+  - Integrity scrubber (verification-only) implemented with configurable interval/concurrency and optional payload verification; metrics exposed: scanned_total, errors_total, last_run_timestamp_seconds, uptime_seconds (see [obs.metrics.scrubber](pkg/obs/metrics/scrubber.go:1)).
+  - Admin repair control surface added:
+    - Queue endpoints: GET /admin/repair/stats, POST /admin/repair/enqueue (see [admin.repair](pkg/admin/repair.go:1))
+    - Worker controls: GET /admin/repair/worker/stats, POST /admin/repair/worker/pause, POST /admin/repair/worker/resume (see [admin.repair_worker](pkg/admin/repair_worker.go:1))
+    - RBAC roles mapped in policy: admin.repair.read, admin.repair.enqueue, admin.repair.control (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1))
+  - Repair metrics added: shardseal_repair_queue_depth with periodic polling (see [obs.metrics.repair](pkg/obs/metrics/repair.go:1)); monitoring assets updated: [configs/monitoring/prometheus/rules.yml](configs/monitoring/prometheus/rules.yml:1), [configs/monitoring/grafana/shardseal_overview.json](configs/monitoring/grafana/shardseal_overview.json:1).
 
 ### Next Up 🚧
-1) Integrity scrubber (production):
-   - Walk buckets/objects to verify sealed shards (header/footer CRC32C and sha256(payload)); record stats/metrics; expose via admin endpoints; configurable concurrency/intervals.
-   - Emit metrics for scrub progress and failures; add unit/integration tests; wire into existing endpoints in [admin.scrubber](pkg/admin/scrubber.go:1).
-2) Monitoring assets and docs:
-   - Validate Prometheus rules and Grafana dashboards; add Alertmanager examples; README quickstart for monitoring using [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1), [configs/monitoring/prometheus/rules.yml](configs/monitoring/prometheus/rules.yml:1), [configs/monitoring/grafana/shardseal_overview.json](configs/monitoring/grafana/shardseal_overview.json:1).
-3) ETag policy decisions and docs:
-   - Confirm/document multipart ETag behavior in sealed mode; adjust tests in [api.s3.server_test](pkg/api/s3/server_test.go:1) if needed; update [README.md](README.md:1).
-4) Docker and compose docs polish:
-   - Verify docker-compose envs/volumes for sealed and Admin OIDC/RBAC; example overrides; adminAddress guidance; see [docker-compose.yml](docker-compose.yml:1) and [Dockerfile](Dockerfile:1).
-5) Distributed metadata/placement (planning):
-   - Draft design notes for embedded Raft and consistent hashing ring with failure-domain awareness.
+1) Self-healing (Phase A)
+   - Wire repair producers on detection paths to enqueue items: scrubber verification and read-time integrity failures (see [repair.scrubber](pkg/repair/scrubber.go:1), [storage.localfs](pkg/storage/localfs.go:1)).
+   - Implement repair worker execution path (no-op -> actual rewrite), ensure idempotency and add outcome/duration metrics.
+   - Extend tests to cover enqueue paths and basic repair worker flows.
+2) Sealed compaction and GC
+   - Manifest reachability scans; sealed shard compaction workflows; admin/CLI triggers; metrics and tests.
+3) Sealed robustness
+   - Fuzzing and fault injection matrix (header/footer tamper, truncation, partial writes); long-run scrub correctness tests.
+4) RS codec integration (Phase B)
+   - Implement Reed–Solomon codec, read-time reconstruction (k-of-k+m), background rewriter to update manifests with generations.
 
 ## Development Guide
 
@@ -447,7 +454,6 @@ No issues requiring a complete rewrite were identified. Priority actions:
 2.  Remove the Range GET fallback and require a seekable reader or return `501 Not Implemented`.
 3.  Strengthen error handling for metadata consistency and log ignored errors appropriately.
 4.  Document and enforce concurrency guarantees for "check-then-act" operations.
-This is a fantastic start to a complex project. Keep up the great work
 ## Future Work: Admin Control Plane, UI, and Monitoring
 
 This section captures planned control-plane capabilities (admin API/UI/CLI) and a practical monitoring strategy for production operations.
