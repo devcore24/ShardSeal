@@ -4,8 +4,6 @@
 # ShardSeal - Open S3-compatible, self-healing object store written in Go.
 (Work in progress)
 
-Repository naming note: The module path and repository are now "shardseal". Some historical references to "s3free" may remain in docs or sample configs; these will be cleaned up progressively. All imports and file paths (e.g., [go.mod](go.mod:1)) use shardseal.
-
 ## Project Status & Goals
 
 ### Current State
