@@ -14,3 +14,52 @@
 # Local data directories
 /data/
 /tmp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.#*
+
+# Go profiles/traces
+*.pprof
+*.prof
+*.profraw
+profile.out
+cpu.prof
+mem.prof
+heap.out
+trace.out
+
+# Env and tooling
+.env
+.env.*
+.envrc
+tags
+
+# Logs and temp
+/logs/
+/log/
+*.tmp
+
+# Compose overrides & local config variants
+docker-compose.override.yml
+docker-compose.local.yml
+configs/**/*.local.yml
+configs/**/*.local.yaml
+
+# Local monitoring (Prometheus TSDB for non-Compose runs)
+/.prom-data/
+
+# Dev certs/keys (optional - comment out if you intentionally commit test certs)
+*.pem
+*.key
+*.crt
+*.csr
+
+# Optional: only if you don't commit these
+# /vendor/
+# go.work
+# go.work.sum
