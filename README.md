@@ -48,7 +48,8 @@ SHARDSEAL_CONFIG=configs/local.yaml make run
 # go run ./cmd/shardseal
 ```
 
-Default address: :8080 (override with env SHARDSEAL_ADDR). Data dirs: ./data (override with env SHARDSEAL_DATA_DIRS as comma-separated list).
+Default address: :8080 (override with env SHARDSEAL_ADDR).  
+Data dirs: ./data (override with env SHARDSEAL_DATA_DIRS as comma-separated list).
 
 ### Using with curl (auth disabled by default; SigV4 optional)
 Bucket naming: 3-63 chars; lowercase letters, digits, dots, hyphens; must start/end with letter or digit.
