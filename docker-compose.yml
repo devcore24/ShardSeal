@@ -95,5 +95,4 @@ volumes:
 
 networks:
   shardseal_net:
-    name: shardseal_net
     driver: bridge

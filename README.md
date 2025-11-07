@@ -206,6 +206,10 @@ Troubleshooting infos:
 To clean up stale compose state and networks, and to re-create containers run:
 ```bash
 # Stop and remove services/anonymous resources from previous runs
+# One liner to remove monitoring and base profiles:
+docker compose --profile monitoring down --remove-orphans && docker compose down --remove-orphans 
+
+# remove base profile only
 docker compose down --remove-orphans
 
 # Remove dangling user-defined networks that may reference old IDs
@@ -462,3 +466,18 @@ Early-stage experimental project — contributions welcome, especially in areas 
 - Performance optimizations
 
 Please keep code documented and tested. Note that the project structure and APIs may change significantly as the design evolves.
+
+## One-liner reset (cleanup + rebuild + monitoring)
+
+Use this single command to fully reset the stack, remove stale networks/containers from older runs, rebuild, and bring up monitoring:
+
+```bash
+bash -lc 'docker compose --profile monitoring down --remove-orphans; docker compose down --remove-orphans; docker ps -q --filter network=shardseal_net | xargs -r docker rm -f; docker network rm shardseal_net 2>/dev/null || true; docker network prune -f; docker compose up --build -d; docker compose --profile monitoring up -d'
+```
+
+Notes:
+- This works even if an older Compose run created a legacy fixed-name network "shardseal_net" with stray containers still attached.
+- For current versions of this repo, the Compose network is project-scoped (no fixed name) per [docker-compose.yml](docker-compose.yml:1); `docker compose down --remove-orphans` will remove it automatically unless unrelated containers attach to it.
+- Prometheus scrapes the service via Docker DNS at `shardseal:8080` per [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1).
+
+If you prefer step-by-step commands, see the "Troubleshooting infos" and "Validation" sections above.
