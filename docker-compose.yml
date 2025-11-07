@@ -1,4 +1,3 @@
-version: "3.8"
 
 services:
   shardseal:
@@ -48,6 +47,8 @@ services:
       - ./data:/home/app/data
       - ./configs:/config:ro
     restart: unless-stopped
+    networks:
+      - shardseal_net
 
   # Optional monitoring stack (enable with: docker compose --profile monitoring up)
   prometheus:
@@ -66,6 +67,8 @@ services:
       - ./configs/monitoring/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - prom_data:/prometheus
     restart: unless-stopped
+    networks:
+      - shardseal_net
 
   grafana:
     image: grafana/grafana:latest
@@ -84,6 +87,13 @@ services:
       # Optional: expose dashboard JSON for easy import via UI
       - ./configs/monitoring/grafana/shardseal_overview.json:/var/lib/grafana/dashboards/shardseal_overview.json:ro
     restart: unless-stopped
+    networks:
+      - shardseal_net
 
 volumes:
   prom_data: {}
+
+networks:
+  shardseal_net:
+    name: shardseal_net
+    driver: bridge

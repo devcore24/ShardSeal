@@ -6,7 +6,7 @@ scrape_configs:
   - job_name: 'shardseal'
     metrics_path: /metrics
     static_configs:
-      - targets: ['localhost:8080']
+      - targets: ['shardseal:8080']
 
 # Optional: scrape Prometheus itself
 # - job_name: 'prometheus'

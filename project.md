@@ -811,3 +811,49 @@ References
 - Storage and sealed format: [storage.localfs](pkg/storage/localfs.go:1), [erasure.rs](pkg/erasure/rs.go:1), [storage.manifest](pkg/storage/manifest.go:1)
 - Observability: [obs.metrics.storage](pkg/obs/metrics/storage.go:1), [obs.metrics.scrubber](pkg/obs/metrics/scrubber.go:1)
 - Admin control: [admin.scrubber](pkg/admin/scrubber.go:1), [cmd.shardseal.main](cmd/shardseal/main.go:1)
+
+## Dev Monitoring via Docker Compose
+
+This repository includes an optional Prometheus + Grafana stack controlled via Docker Compose profiles. The compose file defines an explicit shared bridge network to ensure stable service discovery and avoid stale implicit network IDs.
+
+- Network: [docker-compose.yml](docker-compose.yml:1) defines a bridge network "shardseal_net" and attaches services "shardseal", "prometheus", and "grafana" to it.
+- Prometheus target: [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1) scrapes "shardseal:8080" (service DNS on the Docker network), not "localhost".
+- Access:
+  - ShardSeal (S3 plane): http://localhost:8080
+  - ShardSeal Admin (if enabled): http://localhost:9090
+  - Prometheus: http://localhost:9091
+  - Grafana: http://localhost:3000 (default admin/admin). Configure a data source pointing to http://prometheus:9090.
+
+Start sequence:
+```bash
+# 1) Base service (builds the image and creates the network if needed)
+docker compose up --build -d
+
+# 2) Monitoring profile (Prometheus + Grafana)
+docker compose --profile monitoring up -d
+```
+
+Troubleshooting: "failed to set up container networking: network ... not found"
+This typically indicates stale compose state or a dangling user-defined network. Clean up and retry:
+```bash
+# Stop and remove services/anonymous resources from previous runs
+docker compose down --remove-orphans
+
+# Remove dangling user-defined networks that may reference old IDs
+docker network prune -f
+
+# (Optional) If Prometheus TSDB is not needed, also prune volumes
+# docker volume prune -f
+
+# Rebuild and start again
+docker compose up --build -d
+docker compose --profile monitoring up -d
+```
+
+Compose configuration notes:
+- The compose stack mounts "./configs" into the container at "/config". Ensure your desired config exists at "./configs/local.yaml" and note that the recommended env for compose is:
+  - SHARDSEAL_CONFIG=/config/local.yaml (see [docker-compose.yml](docker-compose.yml:1))
+- The base image documentation uses "/home/app/config/config.yaml" for raw "docker run" examples; both paths are supported as long as SHARDSEAL_CONFIG points to the mounted file.
+
+Related documentation:
+- See also the README compose instructions and troubleshooting notes in [README.md](README.md:1).

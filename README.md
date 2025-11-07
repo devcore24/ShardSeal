@@ -187,10 +187,10 @@ prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
 
 Compose profile (optional monitoring stack):
 ```bash
-# Bring up shardseal as usual (uses service 'shardseal')
+# 1. Bring up shardseal as usual (uses service 'shardseal')
 docker compose up --build -d
 
-# Bring up monitoring stack (Prometheus + Grafana) using the 'monitoring' profile
+# 2. Bring up monitoring stack (Prometheus + Grafana) using the 'monitoring' profile
 docker compose --profile monitoring up -d
 
 # Access:
@@ -202,6 +202,40 @@ docker compose --profile monitoring up -d
 #   configs/monitoring/grafana/shardseal_overview.json
 ```
 
+Troubleshooting infos:
+To clean up stale compose state and networks, and to re-create containers run:
+```bash
+# Stop and remove services/anonymous resources from previous runs
+docker compose down --remove-orphans
+
+# Remove dangling user-defined networks that may reference old IDs
+docker network prune -f
+
+# (Optional) If Prometheus data retention is not required, remove its anonymous volume too
+# docker volume prune -f
+
+# Rebuild and start the base service
+docker compose up --build -d
+
+# Start the monitoring profile (creates the explicit shardseal_net if missing)
+docker compose --profile monitoring up -d
+```
+
+Validation
+- ShardSeal: http://localhost:8080
+- Admin (if enabled): http://localhost:9090
+- Prometheus: http://localhost:9091 (Targets page should show shardseal:8080 as UP)
+- Grafana: http://localhost:3000 (default admin/admin). Add Prometheus datasource at URL http://prometheus:9090 and import dashboard from configs/monitoring/grafana/shardseal_overview.json
+
+Notes:
+- Explicit Docker network: [docker-compose.yml](docker-compose.yml:1) defines a bridge network "shardseal_net" and attaches shardseal, prometheus, and grafana to it. This avoids stale/implicit network IDs across runs.
+- Prometheus scrape target: [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1) uses "shardseal:8080" (service DNS on the Docker network), not "localhost:8080".
+
+
+
+Also verify:
+- The Prometheus target inside the container is "shardseal:8080" per [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1).
+- The Grafana Prometheus datasource URL is "http://prometheus:9090" (both services share the "shardseal_net" network defined in [docker-compose.yml](docker-compose.yml:1)).
 Tracing and S3 error headers
 - Server spans include: http.method, http.target, http.route, http.status_code, user_agent.original, net.peer.ip, http.server_duration_ms.
 - S3 attributes (low cardinality): s3.op, s3.bucket_present, s3.admin, s3.error. New: s3.error_code on failures; optional s3.key_hash when enabled.
