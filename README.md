@@ -172,19 +172,6 @@ curl -s http://localhost:8080/metrics | head -n 20
 - Grafana dashboard (import JSON): configs/monitoring/grafana/shardseal_overview.json
 - Includes sealed I/O metrics, scrubber metrics (scanned/errors/last_run/uptime), and repair metrics (queue_depth). The server polls scrubber stats and repair queue length every 10s and exports to the main registry.
 
-Quick start:
-```bash
-# 1) Run shardseal (default :8080 exposes /metrics)
-SHARDSEAL_CONFIG=configs/local.yaml make run
-
-# 2) Start Prometheus (adjust path as needed)
-prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
-
-# 3) Import Grafana dashboard JSON:
-#    configs/monitoring/grafana/shardseal_overview.json
-#    and set the Prometheus datasource accordingly.
-```
-
 Compose profile (optional monitoring stack):
 ```bash
 # 1. Bring up shardseal as usual (uses service 'shardseal')
@@ -455,18 +442,6 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
 2) Background scrubber and self-healing
 3) Admin API hardening (OIDC/RBAC), monitoring assets (dashboards/alerts)
 
-## License
-AGPL-3.0-or-later
-
-## Contributing
-Early-stage experimental project — contributions welcome, especially in areas of:
-- Erasure coding implementations
-- Distributed systems algorithms
-- Storage integrity verification techniques
-- Performance optimizations
-
-Please keep code documented and tested. Note that the project structure and APIs may change significantly as the design evolves.
-
 ## One-liner reset (cleanup + rebuild + monitoring)
 
 Use this single command to fully reset the stack, remove stale networks/containers from older runs, rebuild, and bring up monitoring:
@@ -481,3 +456,30 @@ Notes:
 - Prometheus scrapes the service via Docker DNS at `shardseal:8080` per [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1).
 
 If you prefer step-by-step commands, see the "Troubleshooting infos" and "Validation" sections above.
+
+## How to run locally, but needs adjustments for prometheus and grafana. (better use docker):
+Quick start:
+```bash
+# 1) Run shardseal (default :8080 exposes /metrics)
+SHARDSEAL_CONFIG=configs/local.yaml make run
+
+# 2) Start Prometheus (adjust path as needed)
+prometheus --config.file=configs/monitoring/prometheus/prometheus.yml
+
+# 3) Import Grafana dashboard JSON:
+#    configs/monitoring/grafana/shardseal_overview.json
+#    and set the Prometheus datasource accordingly.
+```
+__________________________
+
+## License
+AGPL-3.0-or-later
+
+## Contributing
+Early-stage experimental project — contributions welcome, especially in areas of:
+- Erasure coding implementations
+- Distributed systems algorithms
+- Storage integrity verification techniques
+- Performance optimizations
+
+Please keep code documented and tested. Note that the project structure and APIs may change significantly as the design evolves.
