@@ -457,7 +457,7 @@ Notes:
 
 If you prefer step-by-step commands, see the "Troubleshooting infos" and "Validation" sections above.
 
-## How to run locally, but needs adjustments for prometheus and grafana. (better use docker):
+## How to run locally, but needs adjustments for prometheus and grafana. (better use docker 😉 ):
 Quick start:
 ```bash
 # 1) Run shardseal (default :8080 exposes /metrics)
