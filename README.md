@@ -228,6 +228,14 @@ curl -s -X POST http://localhost:9090/admin/repair/worker/pause
 curl -s -X POST http://localhost:9090/admin/repair/worker/resume
 ```
 
+#### Notes on authentication (OIDC)
+- Enable OIDC via config (`oidc.*`) or env (`SHARDSEAL_OIDC_*`). Set `issuer` (or `jwksURL`) and expected `clientID`/`audience`.
+- Obtain a JWT from your IdP (ID token or access token) whose `aud` matches the configured audience.
+- Pass the token in the `Authorization` header:
+  - Example: `curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/admin/repair/stats`
+- Health/version exemptions: if configured, `/admin/health` and `/admin/version` can be accessed without a token.
+- RBAC: endpoints require roles like `admin.read`, `admin.scrub`, `admin.repair.*` (see `pkg/security/oidc/rbac.go`).
+
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
 - Default counters and histograms include:
