@@ -161,6 +161,9 @@ func main() {
 		// Use shared admin package handler to run a single GC pass (best-effort).
 		adminMux.Handle("/admin/gc/multipart", adminpkg.NewMultipartGCHandler(store, objs))
 
+		// Initialize repair queue early (used by scrubber, worker, and admin endpoints)
+		repQ = repair.NewMemQueue(1024)
+
 		// Scrubber admin endpoints (experimental): GET /admin/scrub/stats, POST /admin/scrub/runonce
 		// Create a sealed scrubber when enabled by config; verifies header/footer CRC and content hash.
 		// Payload re-hash verification is tied to sealed.verifyOnRead for now.
@@ -183,6 +186,19 @@ func main() {
 				Concurrency:   concurrency,
 				VerifyPayload: verifyPayload,
 			})
+			// Wire repair queue to scrubber + storage callback
+			ss.SetRepairQueue(repQ)
+			// Wire storage repair callback to enqueue into repair queue
+			objs.SetRepairCallback(func(ctx context.Context, it storage.RepairItem) error {
+				return repQ.Enqueue(ctx, repair.RepairItem{
+					Bucket:     it.Bucket,
+					Key:        it.Key,
+					ShardPath:  it.ShardPath,
+					Reason:     it.Reason,
+					Priority:   it.Priority,
+					Discovered: it.Discovered,
+				})
+			})
 			// Start in background
 			_ = ss.Start(context.Background())
 			scrub = ss
@@ -194,7 +210,6 @@ func main() {
 		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
 
 		// Repair queue admin endpoints
-		repQ = repair.NewMemQueue(1024)
 		adminMux.Handle("/admin/repair/stats", adminpkg.NewRepairQueueStatsHandler(repQ))
 		adminMux.Handle("/admin/repair/enqueue", adminpkg.NewRepairEnqueueHandler(repQ))
 		// Observe repair queue depth

@@ -2,7 +2,9 @@ package s3
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/xml"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -759,11 +761,30 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 	combinedReader := io.MultiReader(partReaders...)
 
 	// Write the final object by streaming from the combined reader
-	etag, _, err := s.objs.Put(ctx, bucket, key, combinedReader)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, errCodeInternalError, "Failed to create final object.", r.URL.Path, "")
-		return
-	}
+    _, _, err = s.objs.Put(ctx, bucket, key, combinedReader)
+    if err != nil {
+        writeError(w, http.StatusInternalServerError, errCodeInternalError, "Failed to create final object.", r.URL.Path, "")
+        return
+    }
+
+    // Compute S3-compatible multipart ETag: MD5 of concatenated part MD5s, with -N suffix
+    // Note: This may differ from storage's returned ETag; we return multipart ETag for S3 semantics.
+    var finalETag string
+    {
+        h := md5.New()
+        // parts are 1..N; ensure stable order by part number
+        for i := 1; i <= len(upload.Parts); i++ {
+            part, ok := upload.Parts[i]
+            if !ok {
+                continue
+            }
+            // part.ETag is hex string; decode to bytes
+            if sum, derr := hex.DecodeString(strings.Trim(part.ETag, "\"")); derr == nil {
+                _, _ = h.Write(sum)
+            }
+        }
+        finalETag = hex.EncodeToString(h.Sum(nil)) + "-" + strconv.Itoa(len(upload.Parts))
+    }
 
 	// Clean up parts
 	for i := 1; i <= len(upload.Parts); i++ {
@@ -778,13 +799,13 @@ func (s *Server) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Re
 		return
 	}
 	
-	result := completeMultipartUploadResult{
-		Xmlns:    s3Xmlns,
-		Location: "/" + bucket + "/" + key,
-		Bucket:   bucket,
-		Key:      key,
-		ETag:     quoteETag(etag),
-	}
+    result := completeMultipartUploadResult{
+        Xmlns:    s3Xmlns,
+        Location: "/" + bucket + "/" + key,
+        Bucket:   bucket,
+        Key:      key,
+        ETag:     quoteETag(finalETag),
+    }
 	
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)

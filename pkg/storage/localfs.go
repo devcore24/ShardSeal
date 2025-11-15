@@ -30,7 +30,23 @@ var ErrIntegrity = errors.New("sealed: integrity check failed")
  	obs          storageObserver
  	sealedEnabled bool  // when true, write sealed shard files + manifest
  	verifyOnRead  bool  // when true, verify footer/content hash on read (TODO in read path)
+    repCb        RepairCallback // optional repair enqueue callback on integrity failures
  }
+
+// RepairItem describes a repair task emitted by the storage layer when
+// an integrity failure is detected during reads/heads.
+// Kept minimal here to avoid import cycles with pkg/repair.
+type RepairItem struct {
+    Bucket     string
+    Key        string
+    ShardPath  string
+    Reason     string
+    Priority   int
+    Discovered time.Time
+}
+
+// RepairCallback is invoked on integrity failures to enqueue a repair task.
+type RepairCallback func(ctx context.Context, item RepairItem) error
 
  // NewLocalFS creates a LocalFS rooted at the first non-empty dir from dirs.
 func NewLocalFS(dirs []string) (*LocalFS, error) {
@@ -62,6 +78,12 @@ func (l *LocalFS) SetSealed(enabled, verifyOnRead bool) {
 	l.verifyOnRead = verifyOnRead
 }
 
+// SetRepairCallback registers a callback used to enqueue repair items when
+// integrity failures are detected during GET/HEAD.
+func (l *LocalFS) SetRepairCallback(cb RepairCallback) {
+    l.repCb = cb
+}
+
 // observe emits a single observation if an observer is registered.
 func (l *LocalFS) observe(op string, bytes int64, err error, start time.Time) {
 	if l != nil && l.obs != nil {
@@ -90,6 +112,21 @@ func annotateSpan(ctx context.Context, attrs ...attribute.KeyValue) {
 	if span != nil && span.IsRecording() {
 		span.SetAttributes(attrs...)
 	}
+}
+
+// enqueueRepair best-effort enqueues a repair item via callback.
+func (l *LocalFS) enqueueRepair(ctx context.Context, bucket, key, shardPath, reason string) {
+    if l == nil || l.repCb == nil {
+        return
+    }
+    _ = l.repCb(ctx, RepairItem{
+        Bucket:     bucket,
+        Key:        key,
+        ShardPath:  shardPath,
+        Reason:     reason,
+        Priority:   0,
+        Discovered: time.Now().UTC(),
+    })
 }
 // sectionReadCloser wraps an io.SectionReader with a Close that closes the underlying file.
 // It implements io.ReadSeeker and io.Closer.
@@ -314,7 +351,7 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 		shard := m.Shards[0]
 		sp := filepath.Join(l.base, filepath.FromSlash(shard.Path))
 		f, err := os.Open(sp)
-		if err != nil {
+        if err != nil {
 			l.observe("get", 0, err, start)
 			return nil, 0, "", time.Time{}, err
 		}
@@ -327,6 +364,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 		hdr, err := erasure.DecodeShardHeader(f)
 		if err != nil {
 			_ = f.Close()
+			// integrity failure -> enqueue repair
+			l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 			l.observe("get", 0, err, start)
 			return nil, 0, "", time.Time{}, err
 		}
@@ -349,6 +388,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 					attribute.Bool("storage.integrity_fail", true),
 					attribute.String("storage.op", "get"),
 				)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
 				return nil, 0, "", time.Time{}, ErrIntegrity
 			}
@@ -361,6 +402,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 					attribute.Bool("storage.integrity_fail", true),
 					attribute.String("storage.op", "get"),
 				)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
 				return nil, 0, "", time.Time{}, ErrIntegrity
 			}
@@ -371,6 +414,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 					attribute.Bool("storage.integrity_fail", true),
 					attribute.String("storage.op", "get"),
 				)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
 				return nil, 0, "", time.Time{}, ErrIntegrity
 			}
@@ -388,6 +433,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 					attribute.Bool("storage.integrity_fail", true),
 					attribute.String("storage.op", "get"),
 				)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
 				return nil, 0, "", time.Time{}, ErrIntegrity
 			}
@@ -400,6 +447,8 @@ func (l *LocalFS) Get(ctx context.Context, bucket, key string) (io.ReadCloser, i
 					attribute.Bool("storage.integrity_fail", true),
 					attribute.String("storage.op", "get"),
 				)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				l.observeSealed("get", 0, ErrIntegrity, start, true, true)
 				return nil, 0, "", time.Time{}, ErrIntegrity
 			}
@@ -453,6 +502,8 @@ func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, 
 			if err != nil {
 				_ = f.Close()
 				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				return 0, "", time.Time{}, ErrIntegrity
 			}
 			footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
@@ -465,6 +516,8 @@ func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, 
 			if err != nil {
 				_ = f.Close()
 				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				return 0, "", time.Time{}, ErrIntegrity
 			}
 			_ = f.Close()
@@ -472,6 +525,8 @@ func (l *LocalFS) Head(ctx context.Context, bucket, key string) (int64, string, 
 			wantBytes, derr := hex.DecodeString(shard.ContentHashHex)
 			if derr != nil || !bytes.Equal(wantBytes, footer.ContentHash[:]) {
 				l.observeSealed("head", 0, ErrIntegrity, start, true, true)
+				// enqueue repair
+				l.enqueueRepair(ctx, bucket, key, shard.Path, "read_integrity_fail")
 				return 0, "", time.Time{}, ErrIntegrity
 			}
 		}

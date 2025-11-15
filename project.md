@@ -1,3 +1,45 @@
+# Engineering TODO (Updated)
+
+Status: reflects recent changes (repair enqueue integration and S3-compatible multipart ETag).
+
+- Completed
+  - Storage enqueues repair items on sealed integrity failures during GET/HEAD.
+  - Scrubber enqueues failing shards into a repair queue.
+  - Admin wiring: when Admin API is enabled, a repair queue is created, metrics are exported, and a background repair worker (no-op) starts with admin controls (stats/pause/resume).
+  - Multipart completion returns S3-compatible ETag (MD5 of part ETags with -N suffix).
+  - Docs updated (README/project) to reflect repair pipeline and multipart ETag behavior.
+
+- High Priority (Next)
+  - Repair worker minimal rewrite for single-shard sealed objects (safety checks, idempotent rewrite, metrics); keep no-op as fallback when unsafe.
+  - Make repair queue available even without Admin API (config toggle) so storage/scrubber enqueues are always accepted.
+  - ListObjectsV2: implement delimiter/common prefixes for S3 parity.
+  - SigV4 hardening: update package comment to match implementation, add clock-skew window and X-Amz-Expires validation; expand tests for canonicalization edge cases.
+  - Storage/manifest durability: fsync manifest directory on atomic rename to harden against crashes.
+
+- Short Term Enhancements
+  - Observability: add S3 op-level metrics (get/put/head/delete/list/multipart) with low-cardinality labels.
+  - Admin: add scrubber pause/resume endpoints; keep stats/runonce.
+  - Sealed range tests: add range GET tests for sealed objects; verify SectionReader path.
+  - Docs: add a short “Repair pipeline” section with example admin requests; note queue depth metric usage in Grafana.
+
+- Medium Term (Core)
+  - Real RS codec (klauspost/reedsolomon or similar) and wire encoding/decoding; multi-shard manifests; reconstruct on read.
+  - Placement ring (vnodes) across multiple dataDirs/disks; prepare for multi-node.
+  - Repair worker: full reconstruct + rewrite from surviving shards; backoff/retry; idempotency.
+
+- Security
+  - SigV4: broaden test coverage (headers/query normalization, signed headers superset checks, payload hash modes).
+  - OIDC/RBAC: configurable claim-to-role mapping and policy table via config.
+
+- Testing & Quality
+  - Fuzz shard header/footer decoders and manifest parser.
+  - Integration tests: multipart ETag compatibility, presigned URLs, copy-object.
+
+- Developer Experience
+  - `ssadm` CLI for admin endpoints (health, scrub stats/runonce, repair queue controls).
+
+---
+
 # ShardSeal — Open S3-compatible, self-healing object store (Go)
 
 A cross‑platform, open-source object/file storage system offering S3 compatibility with built‑in self-healing, strong data integrity, and corruption recovery—without enterprise gates. Written in Go.
@@ -30,7 +72,7 @@ A cross‑platform, open-source object/file storage system offering S3 compatibi
   - S3 API: CreateBucket, PutObject (incl. multipart), GetObject (range), Head, Delete, List V2
   - Authentication: AWS Signature V4; optional static users/keys
   - Storage: local disks/paths, erasure-coded stripes, per-chunk checksums
-  - Integrity: bitrot detection, read-time repair, object-level Merkle root
+  - Integrity: bitrot detection, read-time detection/enqueue (no-op worker), object-level Merkle root
   - Metadata: strongly consistent (single-node: local), version IDs (UUIDv7), ETag compatibility
   - Observability: Prometheus metrics, structured logs, health endpoints
 - P1
@@ -54,7 +96,7 @@ A cross‑platform, open-source object/file storage system offering S3 compatibi
 - Metadata Service: authoritative object metadata, bucket configs, multipart state; Raft for consensus in clusters; pluggable local KV (Pebble/Badger) for single-node.
 - Object Store (Chunk/Shard Layer): writes data in erasure-coded stripes across disks/nodes; verifies checksums and seals shards with headers/footers.
 - Erasure Engine: Reed–Solomon (RS k+m), vectorized parity; configurable stripe size and block size.
-- Healer & Scrubber: on-read repair; background scanners that detect bitrot, missing shards, and drift; prioritized repair queues.
+ - Healer & Scrubber: on-read detection/enqueue (current milestone); background scanners that detect bitrot, missing shards, and drift; prioritized repair queues.
 - Placement: consistent hashing ring with virtual nodes; awareness of failure domains (disk/node/rack/zone) when available.
 - Security: envelope encryption, per-object data keys, KMS plugins, SSE-C support.
 - Observability: Prometheus, OpenTelemetry traces, debug profiles.
@@ -149,7 +191,7 @@ Compaction & GC
 - Phase 1: Single-node MVP
   - Local disks, RS(k=6,m=3) default, chunking, headers/footers, per-object manifest.
   - S3: buckets, put/get/head/delete/list, multipart; SigV4; Prometheus metrics.
-  - Read-time repair; basic scrubber; config + CLI.
+  - Read-time detection/enqueue; basic scrubber; config + CLI.
 - Phase 2: Distributed metadata + placement
   - Raft cluster; consistent hashing; replication of manifests; node/disk discovery.
   - Quorum writes/reads; background healing across nodes; rebalance; failure-domain awareness.

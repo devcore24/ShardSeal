@@ -23,17 +23,37 @@ _______________
   - Range GET support (single range, requires seekable storage)
   - ListObjectsV2 (bucket object listing with prefix, pagination)
   - Multipart uploads (initiate/upload-part/complete/abort)
+  - Multipart: streaming completion with S3-compatible ETag (MD5 of part ETags + -N)
   - Config (YAML + env), structured logging, CI
   - Prometheus metrics (/metrics) and HTTP instrumentation
   - Tracing: OpenTelemetry scaffold (optional; OTLP gRPC/HTTP); spans include s3.error_code; optional s3.key_hash via config
   - Authentication: AWS Signature V4 (optional; header and presigned URL)
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
   - Admin API (optional, separate port) with optional OIDC + RBAC: /admin/health, /admin/version; multipart GC endpoint (/admin/gc/multipart)
+  - Repair pipeline (experimental): sealed integrity failures during GET/HEAD and scrubber scans enqueue repair items to an in-memory queue; a background repair worker runs as a no-op with admin controls
   - Unit tests for buckets/objects/multipart
   - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
 - Not yet implemented / in progress
-  - Self-healing (erasure coding and background rewriter): verification-only scrubber implemented (no healing yet); sealed I/O and integrity verification are available behind feature flags.
+  - Self-healing (erasure coding and background rewriter): verification-only scrubber implemented; integrity failures are enqueued for repair, but the worker is currently a no-op (no healing yet). Sealed I/O and integrity verification are available behind feature flags.
   - Distributed metadata/placement
+
+## Roadmap / TODO (Summary)
+- High priority
+  - Minimal repair rewrite for single-shard sealed objects (safe rewrite; metrics)
+  - Optional repair queue when Admin API is disabled (config toggle)
+  - ListObjectsV2 delimiter/common prefixes for S3 parity
+  - SigV4 hardening (clock skew, X-Amz-Expires, edge cases) + tests
+  - Manifest durability: fsync directory after atomic rename
+- Short term
+  - S3 op metrics for API (get/put/head/delete/list/multipart)
+  - Admin: scrubber pause/resume endpoints
+  - Sealed range tests for payload section reads
+  - Docs/examples for repair pipeline and multipart ETag
+- Medium term
+  - Real RS codec and multi-shard layout; reconstruct on read
+  - Placement ring across dataDirs; prep for multi-node
+  - Repair worker: reconstruct + rewrite with retry/backoff
+- See project.md for the full, prioritized list.
 
 ## Quick start
 ### Prerequisites
@@ -84,6 +104,46 @@ curl -X DELETE http://localhost:8080/my-bucket/hello.txt
 
 # Delete bucket (must be empty - excludes internal .multipart files)
 curl -X DELETE http://localhost:8080/my-bucket
+```
+
+### Multipart upload example (ETag behavior)
+- Requirements: Admin API not required. Ensure bucket exists. Example uses two parts.
+- After completion, ETag equals MD5 of concatenated part MD5s with "-N" suffix.
+
+```bash
+bucket=my-bucket
+object=big.bin
+
+# 1) Initiate multipart upload
+uploadId=$(curl -s -X POST "http://localhost:8080/$bucket/$object?uploads" \
+  | sed -n 's:.*<UploadId>\(.*\)</UploadId>.*:\1:p')
+echo "UploadId=$uploadId"
+
+# 2) Upload two parts; capture each returned ETag from response headers
+part1ETag=$(printf 'A%.0s' {1..6000000} | \
+  curl -s -i -X PUT "http://localhost:8080/$bucket/$object?partNumber=1&uploadId=$uploadId" \
+       --data-binary @- | tr -d '\r' | awk -F': ' '/^ETag:/ {gsub(/\"/,"",$2); print $2}')
+
+part2ETag=$(printf 'B%.0s' {1..6000000} | \
+  curl -s -i -X PUT "http://localhost:8080/$bucket/$object?partNumber=2&uploadId=$uploadId" \
+       --data-binary @- | tr -d '\r' | awk -F': ' '/^ETag:/ {gsub(/\"/,"",$2); print $2}')
+
+echo "Part1 ETag=$part1ETag" ; echo "Part2 ETag=$part2ETag"
+
+# 3) Complete using the part list; server streams parts and returns multipart ETag
+cat > complete.xml <<XML
+<CompleteMultipartUpload>
+  <Part><PartNumber>1</PartNumber><ETag>"$part1ETag"</ETag></Part>
+  <Part><PartNumber>2</PartNumber><ETag>"$part2ETag"</ETag></Part>
+</CompleteMultipartUpload>
+XML
+
+curl -s -X POST "http://localhost:8080/$bucket/$object?uploadId=$uploadId" \
+     -H 'Content-Type: application/xml' --data-binary @complete.xml
+# Response ETag => md5(concat(md5(part1), md5(part2))) - 2
+
+# 4) Verify object is retrievable
+curl -I "http://localhost:8080/$bucket/$object"
 ```
 
 ## Testing
@@ -138,7 +198,35 @@ Notes:
   - GET /admin/scrub/stats (RBAC: admin.read)
   - POST /admin/scrub/runonce (RBAC: admin.scrub)
   - The scrubber verifies sealed headers/footers and compares footer content-hash to the manifest. Payload re-hash verification is enabled when sealed.verifyOnRead is true (or forced via SHARDSEAL_SCRUBBER_VERIFY_PAYLOAD). Protect these with OIDC/RBAC as needed (see [security.oidc.rbac](pkg/security/oidc/rbac.go:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+- Repair pipeline (experimental): when Admin API is enabled, an in-memory repair queue is created. The storage layer enqueues items on sealed integrity failures during GET/HEAD, and the scrubber enqueues detected failures. A background repair worker starts (currently a no-op) and can be inspected/controlled via admin endpoints.
 - The provided [docker-compose.yml](docker-compose.yml:1) includes commented environment toggles for sealed mode, scrubber, tracing, admin OIDC, and GC; uncomment to enable as needed.
+
+### Admin repair examples
+Enable Admin API (e.g., `SHARDSEAL_ADMIN_ADDR=:9090`). If OIDC is enabled, include a valid Bearer token; otherwise these endpoints are unauthenticated.
+
+```bash
+# Queue length
+curl -s http://localhost:9090/admin/repair/stats
+
+# Enqueue a repair item (e.g., detected externally)
+curl -s -X POST http://localhost:9090/admin/repair/enqueue \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "bucket":"bkt",
+    "key":"dir/obj.txt",
+    "shardPath":"objects/bkt/dir/obj.txt/data.ss1",
+    "reason":"admin"
+  }'
+
+# Scrubber controls
+curl -s http://localhost:9090/admin/scrub/stats
+curl -s -X POST http://localhost:9090/admin/scrub/runonce
+
+# Repair worker controls
+curl -s http://localhost:9090/admin/repair/worker/stats
+curl -s -X POST http://localhost:9090/admin/repair/worker/pause
+curl -s -X POST http://localhost:9090/admin/repair/worker/resume
+```
 
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.

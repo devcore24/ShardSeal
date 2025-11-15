@@ -188,20 +188,22 @@ func sinceIfSet(t time.Time) time.Duration {
 // detect latent corruption in the payload region. This implementation does not
 // repair; it only detects and reports via Stats.
 type SealedScrubber struct {
-	cfg      Config
-	baseDirs []string
+    cfg      Config
+    baseDirs []string
 
-	mu      sync.RWMutex
-	start   time.Time
-	running atomic.Bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
+    mu      sync.RWMutex
+    start   time.Time
+    running atomic.Bool
+    stopCh  chan struct{}
+    doneCh  chan struct{}
 
-	scanned   atomic.Uint64
-	repaired  atomic.Uint64
-	errors    atomic.Uint64
-	lastRun   atomic.Pointer[time.Time]
-	lastError atomic.Pointer[string]
+    scanned   atomic.Uint64
+    repaired  atomic.Uint64
+    errors    atomic.Uint64
+    lastRun   atomic.Pointer[time.Time]
+    lastError atomic.Pointer[string]
+
+    repQ      RepairQueue // optional repair queue; when set, enqueue on failures
 }
 
 // NewSealedScrubber creates a scrubber for one or more ShardSeal data directories.
@@ -272,7 +274,7 @@ func (s *SealedScrubber) Stop(ctx context.Context) error {
 }
 
 func (s *SealedScrubber) RunOnce(ctx context.Context) error {
-	return s.doRunOnce(ctx)
+    return s.doRunOnce(ctx)
 }
 
 func (s *SealedScrubber) doRunOnce(ctx context.Context) error {
@@ -372,12 +374,12 @@ func (s *SealedScrubber) scanAll(ctx context.Context) error {
 
 	// workers
 	var wg sync.WaitGroup
-	worker := func() {
-		defer wg.Done()
-		for j := range jobs {
-			_ = s.verifyObject(ctx, j.base, j.bkt, j.key)
-		}
-	}
+    worker := func() {
+        defer wg.Done()
+        for j := range jobs {
+            _ = s.verifyObject(ctx, j.base, j.bkt, j.key)
+        }
+    }
 	for i := 0; i < s.cfg.Concurrency; i++ {
 		wg.Add(1)
 		go worker()
@@ -395,81 +397,90 @@ func (s *SealedScrubber) scanAll(ctx context.Context) error {
 func (s *SealedScrubber) verifyObject(ctx context.Context, base, bucket, key string) error {
 	// Load manifest
 	m, err := storage.LoadManifest(ctx, base, bucket, key)
-	if err != nil || m == nil || len(m.Shards) == 0 {
-		return err
-	}
+    if err != nil || m == nil || len(m.Shards) == 0 {
+        return err
+    }
 	// Process all shards (M1: usually 1)
 	var hadErr bool
-	for _, sh := range m.Shards {
-		sp := filepath.Join(base, filepath.FromSlash(sh.Path))
-		f, oerr := os.Open(sp)
-		if oerr != nil {
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		// Decode header
-		if _, oerr = f.Seek(0, io.SeekStart); oerr != nil {
-			_ = f.Close()
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		hdr, oerr := erasure.DecodeShardHeader(f)
-		if oerr != nil {
-			_ = f.Close()
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		// Read and verify footer CRC; compare content hash with manifest
-		footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
-		if _, oerr = f.Seek(footerOff, io.SeekStart); oerr != nil {
-			_ = f.Close()
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		footer, oerr := erasure.DecodeShardFooter(f)
-		if oerr != nil {
-			_ = f.Close()
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		want, derr := hex.DecodeString(sh.ContentHashHex)
-		if derr != nil || !bytesEqual(want, footer.ContentHash[:]) {
-			_ = f.Close()
-			hadErr = true
-			s.errors.Add(1)
-			continue
-		}
-		// Optionally recompute payload sha256 and compare with footer
-		if s.cfg.VerifyPayload {
-			if _, oerr = f.Seek(int64(hdr.HeaderSize), io.SeekStart); oerr != nil {
-				_ = f.Close()
-				hadErr = true
-				s.errors.Add(1)
-				continue
-			}
-			h := sha256.New()
-			if _, oerr = io.CopyN(h, f, int64(hdr.PayloadLength)); oerr != nil {
-				_ = f.Close()
-				hadErr = true
-				s.errors.Add(1)
-				continue
-			}
-			var sum [32]byte
-			copy(sum[:], h.Sum(nil))
-			if !bytesEqual(sum[:], footer.ContentHash[:]) {
-				_ = f.Close()
-				hadErr = true
-				s.errors.Add(1)
-				continue
-			}
-		}
-		_ = f.Close()
-	}
+    for _, sh := range m.Shards {
+        sp := filepath.Join(base, filepath.FromSlash(sh.Path))
+        f, oerr := os.Open(sp)
+        if oerr != nil {
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        // Decode header
+        if _, oerr = f.Seek(0, io.SeekStart); oerr != nil {
+            _ = f.Close()
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        hdr, oerr := erasure.DecodeShardHeader(f)
+        if oerr != nil {
+            _ = f.Close()
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        // Read and verify footer CRC; compare content hash with manifest
+        footerOff := int64(hdr.HeaderSize) + int64(hdr.PayloadLength)
+        if _, oerr = f.Seek(footerOff, io.SeekStart); oerr != nil {
+            _ = f.Close()
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        footer, oerr := erasure.DecodeShardFooter(f)
+        if oerr != nil {
+            _ = f.Close()
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        want, derr := hex.DecodeString(sh.ContentHashHex)
+        if derr != nil || !bytesEqual(want, footer.ContentHash[:]) {
+            _ = f.Close()
+            hadErr = true
+            s.errors.Add(1)
+            s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+            continue
+        }
+        // Optionally recompute payload sha256 and compare with footer
+        if s.cfg.VerifyPayload {
+            if _, oerr = f.Seek(int64(hdr.HeaderSize), io.SeekStart); oerr != nil {
+                _ = f.Close()
+                hadErr = true
+                s.errors.Add(1)
+                s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+                continue
+            }
+            h := sha256.New()
+            if _, oerr = io.CopyN(h, f, int64(hdr.PayloadLength)); oerr != nil {
+                _ = f.Close()
+                hadErr = true
+                s.errors.Add(1)
+                s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+                continue
+            }
+            var sum [32]byte
+            copy(sum[:], h.Sum(nil))
+            if !bytesEqual(sum[:], footer.ContentHash[:]) {
+                _ = f.Close()
+                hadErr = true
+                s.errors.Add(1)
+                s.enqueueRepair(ctx, bucket, key, sh.Path, "scrub_fail")
+                continue
+            }
+        }
+        _ = f.Close()
+    }
 	// Count one scanned object (aggregate over shards)
 	s.scanned.Add(1)
 	if hadErr {
@@ -489,4 +500,21 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
+}
+
+// SetRepairQueue configures the scrubber to enqueue repair tasks on failures.
+func (s *SealedScrubber) SetRepairQueue(q RepairQueue) { s.repQ = q }
+
+func (s *SealedScrubber) enqueueRepair(ctx context.Context, bucket, key, shardPath, reason string) {
+    if s == nil || s.repQ == nil {
+        return
+    }
+    _ = s.repQ.Enqueue(ctx, RepairItem{
+        Bucket:     bucket,
+        Key:        key,
+        ShardPath:  shardPath,
+        Reason:     reason,
+        Priority:   0,
+        Discovered: time.Now().UTC(),
+    })
 }
