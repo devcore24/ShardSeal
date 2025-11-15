@@ -52,7 +52,7 @@ func main() {
 		slog.Warn("tracing init failed", slog.String("error", terr.Error()))
 	}
 
-	mux := http.NewServeMux()
+    mux := http.NewServeMux()
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK); _, _ = w.Write([]byte("ok")) })
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !ready.Load() {
@@ -126,15 +126,62 @@ func main() {
 	}
 
 	// Optional Admin server on separate port with read-only endpoints
-	var adminSrv *http.Server
-	var gcStop context.CancelFunc
-	var scrub repair.Scrubber
-	var scrubPollStop func()
-	var repQ repair.RepairQueue
-	var repQPollStop func()
-	var repW *repair.Worker
-	if cfg.AdminAddress != "" {
-		adminMux := http.NewServeMux()
+    var adminSrv *http.Server
+    var gcStop context.CancelFunc
+    var scrub repair.Scrubber
+    var scrubPollStop func()
+    var repQ repair.RepairQueue
+    var repQPollStop func()
+    var repW *repair.Worker
+
+    // Initialize repair queue/worker when enabled via config (always-on, independent of Admin API)
+    if cfg.Repair.Enabled {
+        repQ = repair.NewMemQueue(1024)
+        // Wire storage repair callback to enqueue into repair queue
+        objs.SetRepairCallback(func(ctx context.Context, it storage.RepairItem) error {
+            return repQ.Enqueue(ctx, repair.RepairItem{
+                Bucket:     it.Bucket,
+                Key:        it.Key,
+                ShardPath:  it.ShardPath,
+                Reason:     it.Reason,
+                Priority:   it.Priority,
+                Discovered: it.Discovered,
+            })
+        })
+        // Start worker and metrics if enabled
+        rm := metrics.NewRepairMetrics(m.Registry())
+        repQPollStop = rm.StartPolling(repQ, 10*time.Second)
+        if cfg.Repair.WorkerEnabled {
+            conc := cfg.Repair.WorkerConcurrency
+            if conc <= 0 { conc = 1 }
+            repW = repair.NewWorker(repQ, repair.WorkerConfig{Concurrency: conc})
+            _ = repW.Start(context.Background())
+        }
+    }
+
+    // Start scrubber based on config, independent of Admin API. Admin may still expose controls.
+    if cfg.Scrubber.Enabled {
+        interval, ierr := time.ParseDuration(cfg.Scrubber.Interval)
+        if ierr != nil || interval <= 0 { interval = time.Hour }
+        concurrency := cfg.Scrubber.Concurrency
+        if concurrency <= 0 { concurrency = 1 }
+        // Determine scrubber payload verification: explicit config overrides sealed.verifyOnRead
+        verifyPayload := cfg.Sealed.VerifyOnRead
+        if cfg.Scrubber.VerifyPayload != nil { verifyPayload = *cfg.Scrubber.VerifyPayload }
+        ss := repair.NewSealedScrubber(cfg.DataDirs, repair.Config{
+            Interval:      interval,
+            Concurrency:   concurrency,
+            VerifyPayload: verifyPayload,
+        })
+        // If repair queue exists, wire it; otherwise scrubber still verifies and updates metrics
+        if repQ != nil { ss.SetRepairQueue(repQ) }
+        _ = ss.Start(context.Background())
+        scrub = ss
+        smScr := metrics.NewScrubberMetrics(m.Registry())
+        scrubPollStop = smScr.StartPolling(scrub, 10*time.Second)
+    }
+    if cfg.AdminAddress != "" {
+        adminMux := http.NewServeMux()
 		// /admin/health: reports liveness and readiness along with version and listen address
 		adminMux.HandleFunc("/admin/health", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -161,71 +208,22 @@ func main() {
 		// Use shared admin package handler to run a single GC pass (best-effort).
 		adminMux.Handle("/admin/gc/multipart", adminpkg.NewMultipartGCHandler(store, objs))
 
-		// Initialize repair queue early (used by scrubber, worker, and admin endpoints)
-		repQ = repair.NewMemQueue(1024)
+        // Scrubber admin endpoints (experimental): GET /admin/scrub/stats, POST /admin/scrub/runonce
+        // Create a sealed scrubber when enabled by config; verifies header/footer CRC and content hash.
+        // Payload re-hash verification is tied to sealed.verifyOnRead for now.
+        // If scrubber is running from config, expose admin controls; otherwise handlers still work (return empty/defaults)
+        adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
+        adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
 
-		// Scrubber admin endpoints (experimental): GET /admin/scrub/stats, POST /admin/scrub/runonce
-		// Create a sealed scrubber when enabled by config; verifies header/footer CRC and content hash.
-		// Payload re-hash verification is tied to sealed.verifyOnRead for now.
-		if cfg.Scrubber.Enabled {
-			interval, ierr := time.ParseDuration(cfg.Scrubber.Interval)
-			if ierr != nil || interval <= 0 {
-				interval = time.Hour
-			}
-			concurrency := cfg.Scrubber.Concurrency
-			if concurrency <= 0 {
-				concurrency = 1
-			}
-			// Determine scrubber payload verification: explicit config overrides sealed.verifyOnRead
-			verifyPayload := cfg.Sealed.VerifyOnRead
-			if cfg.Scrubber.VerifyPayload != nil {
-				verifyPayload = *cfg.Scrubber.VerifyPayload
-			}
-			ss := repair.NewSealedScrubber(cfg.DataDirs, repair.Config{
-				Interval:      interval,
-				Concurrency:   concurrency,
-				VerifyPayload: verifyPayload,
-			})
-			// Wire repair queue to scrubber + storage callback
-			ss.SetRepairQueue(repQ)
-			// Wire storage repair callback to enqueue into repair queue
-			objs.SetRepairCallback(func(ctx context.Context, it storage.RepairItem) error {
-				return repQ.Enqueue(ctx, repair.RepairItem{
-					Bucket:     it.Bucket,
-					Key:        it.Key,
-					ShardPath:  it.ShardPath,
-					Reason:     it.Reason,
-					Priority:   it.Priority,
-					Discovered: it.Discovered,
-				})
-			})
-			// Start in background
-			_ = ss.Start(context.Background())
-			scrub = ss
-			// Expose scrubber metrics on main registry and poll periodically
-			smScr := metrics.NewScrubberMetrics(m.Registry())
-			scrubPollStop = smScr.StartPolling(scrub, 10*time.Second)
-		}
-		adminMux.Handle("/admin/scrub/stats", adminpkg.NewScrubberStatsHandler(scrub))
-		adminMux.Handle("/admin/scrub/runonce", adminpkg.NewScrubberRunOnceHandler(scrub))
+        // Repair queue admin endpoints (queue may be nil if not enabled)
+        adminMux.Handle("/admin/repair/stats", adminpkg.NewRepairQueueStatsHandler(repQ))
+        adminMux.Handle("/admin/repair/enqueue", adminpkg.NewRepairEnqueueHandler(repQ))
+        // Worker controls (no-op if worker not started)
+        adminMux.Handle("/admin/repair/worker/stats", adminpkg.NewRepairWorkerStatsHandler(repW))
+        adminMux.Handle("/admin/repair/worker/pause", adminpkg.NewRepairWorkerPauseHandler(repW))
+        adminMux.Handle("/admin/repair/worker/resume", adminpkg.NewRepairWorkerResumeHandler(repW))
 
-		// Repair queue admin endpoints
-		adminMux.Handle("/admin/repair/stats", adminpkg.NewRepairQueueStatsHandler(repQ))
-		adminMux.Handle("/admin/repair/enqueue", adminpkg.NewRepairEnqueueHandler(repQ))
-		// Observe repair queue depth
-		rm := metrics.NewRepairMetrics(m.Registry())
-		repQPollStop = rm.StartPolling(repQ, 10*time.Second)
-
-		// Start background repair worker (M1 no-op processor) and expose controls
-		repW = repair.NewWorker(repQ, repair.WorkerConfig{Concurrency: 1})
-		_ = repW.Start(context.Background())
-
-		// Worker control endpoints: stats/pause/resume (RBAC enforced by policy)
-		adminMux.Handle("/admin/repair/worker/stats", adminpkg.NewRepairWorkerStatsHandler(repW))
-		adminMux.Handle("/admin/repair/worker/pause", adminpkg.NewRepairWorkerPauseHandler(repW))
-		adminMux.Handle("/admin/repair/worker/resume", adminpkg.NewRepairWorkerResumeHandler(repW))
-		
-						// Optionally protect Admin API with OIDC when enabled
+        						// Optionally protect Admin API with OIDC when enabled
 						adminHandler := http.Handler(adminMux)
 						if cfg.OIDC.Enabled {
 							v, err := adminoidc.NewVerifier(context.Background(), adminoidc.Config{

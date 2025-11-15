@@ -236,6 +236,8 @@ curl -s -X POST http://localhost:9090/admin/repair/worker/resume
 - Health/version exemptions: if configured, `/admin/health` and `/admin/version` can be accessed without a token.
 - RBAC: endpoints require roles like `admin.read`, `admin.scrub`, `admin.repair.*` (see `pkg/security/oidc/rbac.go`).
 
+Note: The repair queue/worker can be enabled without the Admin API via config (`repair.enabled: true`). In that case, the queue and worker run in the background, and metrics are exported; admin endpoints are simply unavailable.
+
 ## Metrics
 - Exposes Prometheus metrics at /metrics on the same HTTP server.
 - Default counters and histograms include:
@@ -389,6 +391,12 @@ dataDirs:
 #   enabled: false
 #   interval: "1h"
 #   concurrency: 1
+
+# Repair pipeline (optional; can run without Admin API)
+# repair:
+#   enabled: false            # when true, create repair queue and wire storage/scrubber
+#   workerEnabled: true       # start background repair worker (no-op in current milestone)
+#   workerConcurrency: 1
 ```
 
 Additional optional request size limits:
@@ -430,6 +438,9 @@ Environment overrides:
 - SHARDSEAL_OIDC_ALLOW_UNAUTH_VERSION  // "true"/"false" to allow unauthenticated /admin/version
 - SHARDSEAL_LIMIT_SINGLE_PUT_MAX_BYTES     // e.g., 5368709120 (5 GiB)
 - SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE  // e.g., 5242880 (5 MiB)
+- SHARDSEAL_REPAIR_ENABLED                 // "true"/"false" to enable repair queue without Admin API
+- SHARDSEAL_REPAIR_WORKER_ENABLED          // "true"/"false" to start repair worker
+- SHARDSEAL_REPAIR_WORKER_CONCURRENCY      // integer >= 1
 </pre>
 
 ## Sealed mode (experimental)

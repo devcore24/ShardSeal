@@ -49,8 +49,9 @@ type Config struct {
 	Sealed       SealedConfig      `yaml:"sealed"`               // sealed I/O (ShardSeal v1) toggles
 	GC           GCConfig          `yaml:"gc"`                  // multipart GC configuration
 	Scrubber     ScrubberConfig    `yaml:"scrubber"`            // integrity scrubber (experimental)
-	OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
-	Limits       LimitsConfig      `yaml:"limits"`              // S3 request size limits
+    OIDC         OIDCConfig        `yaml:"oidc"`                // admin OIDC verification
+    Limits       LimitsConfig      `yaml:"limits"`              // S3 request size limits
+    Repair       RepairConfig      `yaml:"repair"`              // repair pipeline controls (queue/worker)
 }
 
 // StaticAccessKey defines a static credential pair.
@@ -110,13 +111,22 @@ type OIDCConfig struct {
 // LimitsConfig controls S3 request size limits (bytes).
 // Zero or missing values fall back to built-in defaults.
 type LimitsConfig struct {
-	SinglePutMaxBytes    int64 `yaml:"singlePutMaxBytes"`     // e.g., 5368709120 (5 GiB)
-	MinMultipartPartSize int64 `yaml:"minMultipartPartSize"`  // e.g., 5242880 (5 MiB)
+    SinglePutMaxBytes    int64 `yaml:"singlePutMaxBytes"`     // e.g., 5368709120 (5 GiB)
+    MinMultipartPartSize int64 `yaml:"minMultipartPartSize"`  // e.g., 5242880 (5 MiB)
+}
+
+// RepairConfig controls the repair pipeline (queue + worker).
+// When Enabled is true, a repair queue is created and wired to the storage/scrubber
+// even if the Admin API is not enabled. The worker can be toggled independently.
+type RepairConfig struct {
+    Enabled           bool `yaml:"enabled"`                     // create queue and wire enqueues
+    WorkerEnabled     bool `yaml:"workerEnabled,omitempty"`     // start background worker
+    WorkerConcurrency int  `yaml:"workerConcurrency,omitempty"` // worker goroutine count (>=1)
 }
  
 // Default returns a Config with safe, local defaults.
 func Default() Config {
-	return Config{
+    return Config{
 		Address:      ":8080",
 		AdminAddress: "",
 		DataDirs:     []string{"./data"},
@@ -151,11 +161,16 @@ func Default() Config {
 			AllowUnauthHealth:  false,
 			AllowUnauthVersion: false,
 		},
-		Limits: LimitsConfig{
-			SinglePutMaxBytes:    5 * 1024 * 1024 * 1024, // 5 GiB
-			MinMultipartPartSize: 5 * 1024 * 1024,        // 5 MiB
-		},
-	}
+        Limits: LimitsConfig{
+            SinglePutMaxBytes:    5 * 1024 * 1024 * 1024, // 5 GiB
+            MinMultipartPartSize: 5 * 1024 * 1024,        // 5 MiB
+        },
+        Repair: RepairConfig{
+            Enabled:           false,
+            WorkerEnabled:     true,
+            WorkerConcurrency: 1,
+        },
+    }
 }
 
 // Load reads configuration from path. If path is empty, it attempts to read
@@ -382,13 +397,36 @@ func applyEnvOverrides(cfg Config) Config {
 			cfg.Limits.SinglePutMaxBytes = x
 		}
 	}
-	if v := os.Getenv("SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE"); v != "" {
-		if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
-			cfg.Limits.MinMultipartPartSize = x
-		}
-	}
+    if v := os.Getenv("SHARDSEAL_LIMIT_MIN_MULTIPART_PART_SIZE"); v != "" {
+        if x, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && x > 0 {
+            cfg.Limits.MinMultipartPartSize = x
+        }
+    }
 
-	return cfg
+    // Repair pipeline overrides
+    if v := os.Getenv("SHARDSEAL_REPAIR_ENABLED"); v != "" {
+        switch strings.ToLower(strings.TrimSpace(v)) {
+        case "1", "true", "yes", "y", "on":
+            cfg.Repair.Enabled = true
+        case "0", "false", "no", "n", "off":
+            cfg.Repair.Enabled = false
+        }
+    }
+    if v := os.Getenv("SHARDSEAL_REPAIR_WORKER_ENABLED"); v != "" {
+        switch strings.ToLower(strings.TrimSpace(v)) {
+        case "1", "true", "yes", "y", "on":
+            cfg.Repair.WorkerEnabled = true
+        case "0", "false", "no", "n", "off":
+            cfg.Repair.WorkerEnabled = false
+        }
+    }
+    if v := os.Getenv("SHARDSEAL_REPAIR_WORKER_CONCURRENCY"); v != "" {
+        if x, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && x > 0 {
+            cfg.Repair.WorkerConcurrency = x
+        }
+    }
+
+    return cfg
 }
 
 func splitAndTrim(s string) []string {
