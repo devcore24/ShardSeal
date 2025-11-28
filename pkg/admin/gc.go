@@ -22,7 +22,7 @@ type UploadStore interface {
 
 // ObjectStore is the subset of the object storage needed for multipart GC.
 type ObjectStore interface {
-	List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error)
+	List(ctx context.Context, bucket, prefix, startAfter, delimiter string, maxKeys int) ([]storage.ObjectMeta, []string, bool, error)
 	Delete(ctx context.Context, bucket, key string) error
 }
 
@@ -54,7 +54,7 @@ func RunMultipartGC(ctx context.Context, store UploadStore, objs ObjectStore, ol
 		prefix := up.Bucket + "/" + up.Key + "/" + up.UploadID + "/"
 		startAfter := ""
 		for {
-			objsList, truncated, lerr := objs.List(ctx, StagingBucket, prefix, startAfter, 1000)
+			objsList, _, truncated, lerr := objs.List(ctx, StagingBucket, prefix, startAfter, "", 1000)
 			if lerr != nil {
 				// best-effort: continue with next upload
 				slog.Error("admin gc: list parts", slog.String("uploadId", up.UploadID), slog.String("error", lerr.Error()))

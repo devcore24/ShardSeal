@@ -123,10 +123,13 @@ type ShardFooter struct {
 
 // EncodeShardHeader returns the binary header including CRC32C.
 func EncodeShardHeader(h ShardHeader) ([]byte, error) {
-	// Compute headerSize if not set
+	// Default to the v1 header length (28 bytes) when not provided.
 	if h.HeaderSize == 0 {
-		// 12 (magic) + 2 (ver) + 2 (size) + 8 (len) + 4 (crc) = 28
 		h.HeaderSize = 28
+	}
+	const minHeaderLen = len(shardSealMagic) + 2 + 2 + 8 + 4
+	if int(h.HeaderSize) < minHeaderLen {
+		return nil, errors.New("shard: header size too small")
 	}
 	buf := new(bytes.Buffer)
 	// magic
@@ -146,6 +149,13 @@ func EncodeShardHeader(h ShardHeader) ([]byte, error) {
 	crc := crc32.Checksum(buf.Bytes(), crcTable)
 	if err := binary.Write(buf, le, crc); err != nil {
 		return nil, err
+	}
+	// Pad to HeaderSize so the encoded bytes match the advertised length.
+	if pad := int(h.HeaderSize) - buf.Len(); pad > 0 {
+		// Pad with zero bytes; payload readers skip HeaderSize bytes regardless.
+		if _, err := buf.Write(make([]byte, pad)); err != nil {
+			return nil, err
+		}
 	}
 	return buf.Bytes(), nil
 }

@@ -45,8 +45,9 @@ queryContinuationToken = "continuation-token"
 queryStartAfter        = "start-after"
 queryMaxKeys           = "max-keys"
 queryUploadID          = "uploadId"
-queryPartNumber        = "partNumber"
-queryUploads           = "uploads"
+	queryPartNumber        = "partNumber"
+	queryUploads           = "uploads"
+	queryDelimiter         = "delimiter"
 
 // Internal staging bucket for multipart temp parts (outside user buckets)
 internalMultipartBucket = ".multipart"
@@ -99,7 +100,7 @@ type objectStore interface {
 	Get(ctx context.Context, bucket, key string) (rc io.ReadCloser, size int64, etag string, lastModified time.Time, err error)
 	Head(ctx context.Context, bucket, key string) (size int64, etag string, lastModified time.Time, err error)
 	Delete(ctx context.Context, bucket, key string) error
-	List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error)
+	List(ctx context.Context, bucket, prefix, startAfter, delimiter string, maxKeys int) ([]storage.ObjectMeta, []string, bool, error)
 	IsBucketEmpty(ctx context.Context, bucket string) (bool, error)
 	RemoveBucket(ctx context.Context, bucket string) error
 }
@@ -489,6 +490,7 @@ type listObjectsV2Result struct {
 	Xmlns                 string          `xml:"xmlns,attr"`
 	Name                  string          `xml:"Name"`
 	Prefix                string          `xml:"Prefix"`
+	Delimiter             string          `xml:"Delimiter,omitempty"`
 	MaxKeys               int             `xml:"MaxKeys"`
 	KeyCount              int             `xml:"KeyCount"`
 	IsTruncated           bool            `xml:"IsTruncated"`
@@ -496,6 +498,11 @@ type listObjectsV2Result struct {
 	NextContinuationToken string          `xml:"NextContinuationToken,omitempty"`
 	StartAfter            string          `xml:"StartAfter,omitempty"`
 	Contents              []objectContent `xml:"Contents"`
+	CommonPrefixes        []commonPrefix  `xml:"CommonPrefixes,omitempty"`
+}
+
+type commonPrefix struct {
+	Prefix string `xml:"Prefix"`
 }
 
 type objectContent struct {
@@ -516,6 +523,7 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 
 	q := r.URL.Query()
 	prefix := q.Get(queryPrefix)
+	delimiter := q.Get(queryDelimiter)
 	continuationToken := q.Get(queryContinuationToken)
 	startAfter := q.Get(queryStartAfter)
 	maxKeysStr := q.Get(queryMaxKeys)
@@ -533,27 +541,29 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 		startAfter = continuationToken
 	}
 
-	// Request one extra to determine if truncated
-	objects, isTruncated, err := s.objs.List(ctx, bucket, prefix, startAfter, maxKeys+1)
+	// Request one extra to determine if truncated? No, storage layer now handles maxKeys roughly.
+	// But we need to handle NextContinuationToken correctly if truncation happens.
+	// If storage returns isTruncated, it means we hit maxKeys.
+	// Since we can't easily know what the "next" item is without fetching it,
+	// the current storage implementation truncates to maxKeys and returns true if more existed.
+	// However, to construct NextContinuationToken, we need the last key returned OR need to know what's next.
+	// If we just use the last returned key, that works for Objects-only list.
+	// If we have CommonPrefixes, the next token might need to be the last prefix.
+	// S3 spec: NextContinuationToken is obfuscated usually, but often just the last key.
+	
+	objects, commonPrefixes, isTruncated, err := s.objs.List(ctx, bucket, prefix, startAfter, delimiter, maxKeys)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errCodeInternalError, "We encountered an internal error. Please try again.", r.URL.Path, "")
 		return
-	}
-
-	// If we got more than maxKeys, we're truncated
-	var nextToken string
-	if len(objects) > maxKeys {
-		isTruncated = true
-		nextToken = objects[maxKeys-1].Key
-		objects = objects[:maxKeys]
 	}
 
 	result := listObjectsV2Result{
 		Xmlns:         s3Xmlns,
 		Name:          bucket,
 		Prefix:        prefix,
+		Delimiter:     delimiter,
 		MaxKeys:       maxKeys,
-		KeyCount:      len(objects),
+		KeyCount:      len(objects) + len(commonPrefixes),
 		IsTruncated:   isTruncated,
 		StartAfter:    startAfter,
 	}
@@ -561,8 +571,21 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 	if continuationToken != "" {
 		result.ContinuationToken = continuationToken
 	}
-	if isTruncated && nextToken != "" {
-		result.NextContinuationToken = nextToken
+	
+	// Determine NextContinuationToken
+	if isTruncated {
+		// Use the lexicographically last item (object key or prefix) as the token
+		var lastKey string
+		if len(objects) > 0 {
+			lastKey = objects[len(objects)-1].Key
+		}
+		if len(commonPrefixes) > 0 {
+			lastPrefix := commonPrefixes[len(commonPrefixes)-1]
+			if lastPrefix > lastKey {
+				lastKey = lastPrefix
+			}
+		}
+		result.NextContinuationToken = lastKey
 	}
 
 	for _, obj := range objects {
@@ -572,6 +595,12 @@ func (s *Server) handleListObjectsV2(w http.ResponseWriter, r *http.Request, buc
 			ETag:         quoteETag(obj.ETag),
 			Size:         obj.Size,
 			StorageClass: "STANDARD",
+		})
+	}
+	
+	for _, cp := range commonPrefixes {
+		result.CommonPrefixes = append(result.CommonPrefixes, commonPrefix{
+			Prefix: cp,
 		})
 	}
 

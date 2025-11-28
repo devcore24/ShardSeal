@@ -21,34 +21,34 @@ _______________
   - S3 basics: ListBuckets (/), CreateBucket (PUT /{bucket}), DeleteBucket (DELETE /{bucket})
   - Objects: Put (PUT /{bucket}/{key}), Get (GET), Head (HEAD), Delete (DELETE)
   - Range GET support (single range, requires seekable storage)
-  - ListObjectsV2 (bucket object listing with prefix, pagination)
+  - ListObjectsV2 (bucket object listing with prefix, delimiter, common prefixes, pagination)
   - Multipart uploads (initiate/upload-part/complete/abort)
   - Multipart: streaming completion with S3-compatible ETag (MD5 of part ETags + -N)
   - Config (YAML + env), structured logging, CI
   - Prometheus metrics (/metrics) and HTTP instrumentation
   - Tracing: OpenTelemetry scaffold (optional; OTLP gRPC/HTTP); spans include s3.error_code; optional s3.key_hash via config
-  - Authentication: AWS Signature V4 (optional; header and presigned URL)
+  - Authentication: AWS Signature V4 (optional; header and presigned URL) with clock-skew enforcement and X-Amz-Expires validation
   - Local filesystem storage backend (dev/MVP), in-memory metadata store
-  - Admin API (optional, separate port) with optional OIDC + RBAC: /admin/health, /admin/version; multipart GC endpoint (/admin/gc/multipart)
-  - Repair pipeline (experimental): sealed integrity failures during GET/HEAD and scrubber scans enqueue repair items to an in-memory queue; a background repair worker runs as a no-op with admin controls
-  - Unit tests for buckets/objects/multipart
-  - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging
+- Admin API (optional, separate port) with optional OIDC + RBAC: /admin/health, /admin/version; multipart GC endpoint (/admin/gc/multipart)
+- Repair pipeline (experimental): sealed integrity failures during GET/HEAD and scrubber scans enqueue repair items to an in-memory queue; a background repair worker runs as a no-op with admin controls
+- Repair worker (single-shard rewrite): validates payload hashes, regenerates sealed headers/footers, updates manifests, and exports success/failure metrics
+- Repair queue/worker can be enabled via config even when the Admin API is disabled (set `repair.enabled: true` / `SHARDSEAL_REPAIR_ENABLED=true`); storage and scrubber enqueues continue and metrics are exported
+- Unit tests for buckets/objects/multipart
+  - **Production-ready fixes:** Streaming multipart completion, safe range handling, improved error logging, manifest fsync after atomic writes
 - Not yet implemented / in progress
   - Self-healing (erasure coding and background rewriter): verification-only scrubber implemented; integrity failures are enqueued for repair, but the worker is currently a no-op (no healing yet). Sealed I/O and integrity verification are available behind feature flags.
   - Distributed metadata/placement
 
 ## Roadmap / TODO (Summary)
 - High priority
-  - Minimal repair rewrite for single-shard sealed objects (safe rewrite; metrics)
-  - Optional repair queue when Admin API is disabled (config toggle)
-  - ListObjectsV2 delimiter/common prefixes for S3 parity
-  - SigV4 hardening (clock skew, X-Amz-Expires, edge cases) + tests
-  - Manifest durability: fsync directory after atomic rename
+  - Extend the repair worker to multi-shard/RS layouts (streaming rewrite + backoff)
+  - Add repair orchestration controls (reason-aware scheduling, rate limiting, queue histograms surfaced to admin/UI)
+  - Expand SigV4 coverage for chunked uploads and odd canonicalization cases (e.g., duplicate headers, session tokens)
 - Short term
   - S3 op metrics for API (get/put/head/delete/list/multipart)
   - Admin: scrubber pause/resume endpoints
   - Sealed range tests for payload section reads
-  - Docs/examples for repair pipeline and multipart ETag
+  - Docs: capture repair queue configuration + admin host-port override tips, and document dashboard/alert wiring for queue depth metrics
 - Medium term
   - Real RS codec and multi-shard layout; reconstruct on read
   - Placement ring across dataDirs; prep for multi-node
@@ -156,7 +156,7 @@ go test ./pkg/api/s3 -v
 ## Docker (dev)
 Two options are provided: local Docker build and docker-compose. The image exposes:
 - 8080: S3 data-plane (configurable via SHARDSEAL_ADDR)
-- 9090: Admin API (when adminAddress is configured)
+- 9090: Admin API (when adminAddress is configured; docker-compose publishes this on host port `${SHARDSEAL_ADMIN_HOST_PORT:-19090}` to avoid clashes with local Prometheus instances)
 
 Build and run (Dockerfile)
 ```bash
@@ -168,7 +168,7 @@ docker build -t shardseal:dev .
 docker run --rm -p 8080:8080 -p 9090:9090 \
   -v "$(pwd)/data:/home/app/data" \
   -v "$(pwd)/configs:/home/app/config:ro" \
-  -e SHARDSEAL_CONFIG=/home/app/config/config.yaml \
+  -e SHARDSEAL_CONFIG=/home/app/config/local.yaml \
   --name shardseal shardseal:dev
 ```
 
@@ -185,6 +185,8 @@ docker compose down
 Notes:
 - The container user is a non-root user (app). Data and config are mounted under /home/app.
 - To enable Admin API, configure adminAddress in the config or set SHARDSEAL_ADMIN_ADDR (see [configs/local.yaml](configs/local.yaml:1) and [cmd.shardseal.main](cmd/shardseal/main.go:1)).
+- By default the compose file publishes the admin listener on host port `${SHARDSEAL_ADMIN_HOST_PORT:-19090}` (container still listens on :9090). Export `SHARDSEAL_ADMIN_HOST_PORT=9090` before `docker compose up` if the default 9090 is free on your machine.
+- Repair queue priorities: read-time integrity failures run at highest priority, scrub detections at normal priority, and admin-enqueued tasks at low priority. Metrics are tagged by reason/result for dashboards/alerts.
 - Sealed mode can be enabled via:
   - YAML: sealed.enabled: true
   - Env: SHARDSEAL_SEALED_ENABLED=true
@@ -202,7 +204,7 @@ Notes:
 - The provided [docker-compose.yml](docker-compose.yml:1) includes commented environment toggles for sealed mode, scrubber, tracing, admin OIDC, and GC; uncomment to enable as needed.
 
 ### Admin repair examples
-Enable Admin API (e.g., `SHARDSEAL_ADMIN_ADDR=:9090`). If OIDC is enabled, include a valid Bearer token; otherwise these endpoints are unauthenticated.
+Enable Admin API (e.g., `SHARDSEAL_ADMIN_ADDR=:9090`). If OIDC is enabled, include a valid Bearer token; otherwise these endpoints are unauthenticated. When using the provided docker-compose file, replace `localhost:9090` below with `localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}` (default 19090).
 
 ```bash
 # Queue length
@@ -255,6 +257,9 @@ Note: The repair queue/worker can be enabled without the Admin API via config (`
   - shardseal_scrubber_last_run_timestamp_seconds
   - shardseal_scrubber_uptime_seconds
   - shardseal_repair_queue_depth
+  - shardseal_repair_enqueued_total{reason}
+  - shardseal_repair_completed_total{result}
+  - shardseal_repair_duration_seconds_bucket/sum/count{result}
 - Example:
 ```bash
 curl -s http://localhost:8080/metrics | head -n 20

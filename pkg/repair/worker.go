@@ -32,6 +32,7 @@ type WorkerStats struct {
 	Running   bool      `json:"running"`
 	Paused    bool      `json:"paused"`
 	Processed uint64    `json:"processed"`
+	Skipped   uint64    `json:"skipped"`
 	Failed    uint64    `json:"failed"`
 	Inflight  int       `json:"inflight"`
 	QueueLen  int       `json:"queueLen"`
@@ -48,16 +49,17 @@ type Worker struct {
 	wg   sync.WaitGroup
 	stop context.CancelFunc
 
-	running  atomic.Bool
-	paused   atomic.Bool
+	running   atomic.Bool
+	paused    atomic.Bool
 	processed atomic.Uint64
+	skipped   atomic.Uint64
 	failed    atomic.Uint64
 	inflight  atomic.Int32
 
 	started time.Time
 
-	mu       sync.Mutex
-	lastErr  string
+	mu        sync.Mutex
+	lastErr   string
 	processor func(context.Context, RepairItem) error
 }
 
@@ -135,6 +137,7 @@ func (w *Worker) Stats() WorkerStats {
 		Running:   w.running.Load(),
 		Paused:    w.paused.Load(),
 		Processed: w.processed.Load(),
+		Skipped:   w.skipped.Load(),
 		Failed:    w.failed.Load(),
 		Inflight:  int(w.inflight.Load()),
 		QueueLen:  0,
@@ -198,11 +201,15 @@ func (w *Worker) loop(ctx context.Context) {
 
 		w.inflight.Add(1)
 		perr := w.processor(ctx, it)
-		if perr != nil {
+		switch {
+		case perr == nil:
+			w.processed.Add(1)
+		case errors.Is(perr, ErrSkip), errors.Is(perr, ErrUnsupported):
+			w.skipped.Add(1)
+			perr = nil
+		default:
 			w.failed.Add(1)
 			w.setLastErr(perr)
-		} else {
-			w.processed.Add(1)
 		}
 		w.inflight.Add(-1)
 	}

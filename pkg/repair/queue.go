@@ -3,6 +3,7 @@ package repair
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,29 @@ type RepairItem struct {
 	Reason     string    // "read_heal" | "scrub_fail" | "admin" | ...
 	Priority   int       // reserved for future scheduling
 	Discovered time.Time // when the issue was detected
+}
+
+const (
+	// PriorityHigh is used for client-facing repairs (e.g., read-time integrity failures).
+	PriorityHigh = 100
+	// PriorityNormal is the default priority for scrub-detected issues.
+	PriorityNormal = 50
+	// PriorityLow is used for manual/admin-triggered repairs.
+	PriorityLow = 10
+)
+
+// PriorityForReason maps a repair reason to a queue priority.
+func PriorityForReason(reason string) int {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "read_integrity_fail", "read_heal":
+		return PriorityHigh
+	case "scrub_fail":
+		return PriorityNormal
+	case "admin":
+		return PriorityLow
+	default:
+		return PriorityNormal
+	}
 }
 
 // RepairQueue provides a minimal queue for repair jobs.

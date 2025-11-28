@@ -2,21 +2,21 @@ package s3
 
 import (
 	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 	"time"
-	"os"
-	"context"
-	"crypto/md5"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"strings"
-	"sort"
-	"reflect"
 
 	"shardseal/pkg/metadata"
 	"shardseal/pkg/security/sigv4"
@@ -44,27 +44,55 @@ func (m *memStore) Put(_ context.Context, bucket, key string, r io.Reader) (stri
 }
 func (m *memStore) Get(_ context.Context, bucket, key string) (io.ReadCloser, int64, string, time.Time, error) {
 	o, ok := m.objs[bucket+"/"+key]
-	if !ok { return nil, 0, "", time.Time{}, os.ErrNotExist }
+	if !ok {
+		return nil, 0, "", time.Time{}, os.ErrNotExist
+	}
 	return io.NopCloser(bytes.NewReader(o.data)), int64(len(o.data)), o.etag, time.Now().UTC(), nil
 }
 func (m *memStore) Head(_ context.Context, bucket, key string) (int64, string, time.Time, error) {
 	o, ok := m.objs[bucket+"/"+key]
-	if !ok { return 0, "", time.Time{}, os.ErrNotExist }
+	if !ok {
+		return 0, "", time.Time{}, os.ErrNotExist
+	}
 	return int64(len(o.data)), o.etag, time.Now().UTC(), nil
 }
 func (m *memStore) Delete(_ context.Context, bucket, key string) error {
-	k := bucket+"/"+key
-	if _, ok := m.objs[k]; !ok { return os.ErrNotExist }
+	k := bucket + "/" + key
+	if _, ok := m.objs[k]; !ok {
+		return os.ErrNotExist
+	}
 	delete(m.objs, k)
 	return nil
 }
-func (m *memStore) List(_ context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error) {
+func (m *memStore) List(_ context.Context, bucket, prefix, startAfter, delimiter string, maxKeys int) ([]storage.ObjectMeta, []string, bool, error) {
 	pfx := bucket + "/"
-	if prefix != "" { pfx = bucket + "/" + prefix }
+	if prefix != "" {
+		pfx = bucket + "/" + prefix
+	}
 	var keys []string
+	// simplified delimiter support for tests: only supports single-char "/"
+	var commonPrefixes []string
+	seenPrefixes := map[string]bool{}
+
 	for k := range m.objs {
 		if strings.HasPrefix(k, pfx) {
 			key := strings.TrimPrefix(k, bucket+"/")
+
+			// delimiter logic
+			if delimiter != "" {
+				part := strings.TrimPrefix(key, prefix)
+				if idx := strings.Index(part, delimiter); idx >= 0 {
+					cp := prefix + part[:idx+len(delimiter)]
+					if !seenPrefixes[cp] {
+						if startAfter == "" || cp > startAfter {
+							commonPrefixes = append(commonPrefixes, cp)
+							seenPrefixes[cp] = true
+						}
+					}
+					continue // skip object
+				}
+			}
+
 			if startAfter == "" || key > startAfter {
 				keys = append(keys, key)
 			}
@@ -72,20 +100,44 @@ func (m *memStore) List(_ context.Context, bucket, prefix, startAfter string, ma
 	}
 	// Sort for stable results
 	sort.Strings(keys)
-	// Limit to maxKeys
+	sort.Strings(commonPrefixes)
+
+	// Limit to maxKeys (simplified total limit)
 	var result []storage.ObjectMeta
-	for i, key := range keys {
-		if i >= maxKeys { break }
+	truncated := false
+
+	// We need to combine and limit.
+	// For tests, we assume maxKeys is large enough or we just return what we found
+	// except for TestListObjectsV2_MaxKeys which tests pagination.
+
+	// In test implementation, we won't perfectly interleave because it's a mock.
+	// But we should respect maxKeys.
+
+	total := len(keys) + len(commonPrefixes)
+	if total > maxKeys {
+		truncated = true
+		// simplistic truncation
+		if len(keys) > maxKeys {
+			keys = keys[:maxKeys]
+		}
+		// if keys took all space, empty prefixes? No, this logic is flawed for exact S3 behavior but sufficient for unit tests unless we add a Delimiter test.
+	}
+
+	for _, key := range keys {
 		o := m.objs[bucket+"/"+key]
 		result = append(result, storage.ObjectMeta{
 			Key: key, Size: int64(len(o.data)), ETag: o.etag, LastModified: time.Now().UTC(),
 		})
 	}
-	return result, len(keys) > maxKeys, nil
+	return result, commonPrefixes, truncated, nil
 }
 func (m *memStore) IsBucketEmpty(_ context.Context, bucket string) (bool, error) {
-	prefix := bucket+"/"
-	for k := range m.objs { if strings.HasPrefix(k, prefix) { return false, nil } }
+	prefix := bucket + "/"
+	for k := range m.objs {
+		if strings.HasPrefix(k, prefix) {
+			return false, nil
+		}
+	}
 	return true, nil
 }
 func (m *memStore) RemoveBucket(_ context.Context, bucket string) error { return nil }
@@ -100,20 +152,28 @@ func TestBuckets_ListAndCreate(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 
 	// Create bucket
 	r = httptest.NewRequest(http.MethodPut, "/my-bucket", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("create bucket expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("create bucket expected 200, got %d", w.Code)
+	}
 
 	// List should include bucket name
 	r = httptest.NewRequest(http.MethodGet, "/", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("my-bucket")) { t.Fatalf("expected my-bucket in list: %s", w.Body.String()) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("my-bucket")) {
+		t.Fatalf("expected my-bucket in list: %s", w.Body.String())
+	}
 }
 
 func TestObjects_PutGetDelete(t *testing.T) {
@@ -128,28 +188,42 @@ func TestObjects_PutGetDelete(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPut, "/b/hello.txt", body)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("put expected 200, got %d", w.Code) }
-	if w.Header().Get("ETag") == "" { t.Fatalf("expected ETag header") }
-	if w.Header().Get("X-S3-Error-Code") != "" { t.Fatalf("unexpected X-S3-Error-Code on success: %q", w.Header().Get("X-S3-Error-Code")) }
+	if w.Code != 200 {
+		t.Fatalf("put expected 200, got %d", w.Code)
+	}
+	if w.Header().Get("ETag") == "" {
+		t.Fatalf("expected ETag header")
+	}
+	if w.Header().Get("X-S3-Error-Code") != "" {
+		t.Fatalf("unexpected X-S3-Error-Code on success: %q", w.Header().Get("X-S3-Error-Code"))
+	}
 
 	// Get object
 	r = httptest.NewRequest(http.MethodGet, "/b/hello.txt", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("get expected 200, got %d", w.Code) }
-	if got := w.Body.String(); got != "hello" { t.Fatalf("unexpected body: %q", got) }
+	if w.Code != 200 {
+		t.Fatalf("get expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "hello" {
+		t.Fatalf("unexpected body: %q", got)
+	}
 
 	// Delete object
 	r = httptest.NewRequest(http.MethodDelete, "/b/hello.txt", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 204 { t.Fatalf("delete expected 204, got %d", w.Code) }
+	if w.Code != 204 {
+		t.Fatalf("delete expected 204, got %d", w.Code)
+	}
 
 	// Get should 404
 	r = httptest.NewRequest(http.MethodGet, "/b/hello.txt", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 404 { t.Fatalf("expected 404 after delete, got %d", w.Code) }
+	if w.Code != 404 {
+		t.Fatalf("expected 404 after delete, got %d", w.Code)
+	}
 	if got := w.Header().Get("X-S3-Error-Code"); got != "NoSuchKey" {
 		t.Fatalf("expected X-S3-Error-Code=NoSuchKey, got %q", got)
 	}
@@ -168,16 +242,22 @@ func TestBucket_DeleteLifecycle(t *testing.T) {
 	r := httptest.NewRequest(http.MethodDelete, "/bkt", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 409 { t.Fatalf("delete bucket expected 409, got %d", w.Code) }
+	if w.Code != 409 {
+		t.Fatalf("delete bucket expected 409, got %d", w.Code)
+	}
 	// delete object then delete bucket
 	r = httptest.NewRequest(http.MethodDelete, "/bkt/x", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 204 { t.Fatalf("delete object expected 204, got %d", w.Code) }
+	if w.Code != 204 {
+		t.Fatalf("delete object expected 204, got %d", w.Code)
+	}
 	r = httptest.NewRequest(http.MethodDelete, "/bkt", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 204 { t.Fatalf("delete bucket expected 204, got %d", w.Code) }
+	if w.Code != 204 {
+		t.Fatalf("delete bucket expected 204, got %d", w.Code)
+	}
 }
 
 func TestListObjectsV2_Basic(t *testing.T) {
@@ -195,12 +275,22 @@ func TestListObjectsV2_Basic(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	body := w.Body.String()
-	if !bytes.Contains(w.Body.Bytes(), []byte("a.txt")) { t.Fatalf("expected a.txt in list: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("b.txt")) { t.Fatalf("expected b.txt in list: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("c.txt")) { t.Fatalf("expected c.txt in list: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) { t.Fatalf("expected KeyCount 3: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("a.txt")) {
+		t.Fatalf("expected a.txt in list: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("b.txt")) {
+		t.Fatalf("expected b.txt in list: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("c.txt")) {
+		t.Fatalf("expected c.txt in list: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) {
+		t.Fatalf("expected KeyCount 3: %s", body)
+	}
 }
 
 func TestListObjectsV2_Prefix(t *testing.T) {
@@ -217,12 +307,22 @@ func TestListObjectsV2_Prefix(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2&prefix=docs/", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	body := w.Body.String()
-	if !bytes.Contains(w.Body.Bytes(), []byte("docs/a.txt")) { t.Fatalf("expected docs/a.txt: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("docs/b.txt")) { t.Fatalf("expected docs/b.txt: %s", body) }
-	if bytes.Contains(w.Body.Bytes(), []byte("images/x.png")) { t.Fatalf("should not have images/x.png: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>2</KeyCount>")) { t.Fatalf("expected KeyCount 2: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("docs/a.txt")) {
+		t.Fatalf("expected docs/a.txt: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("docs/b.txt")) {
+		t.Fatalf("expected docs/b.txt: %s", body)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte("images/x.png")) {
+		t.Fatalf("should not have images/x.png: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>2</KeyCount>")) {
+		t.Fatalf("expected KeyCount 2: %s", body)
+	}
 }
 
 func TestListObjectsV2_MaxKeys(t *testing.T) {
@@ -230,7 +330,7 @@ func TestListObjectsV2_MaxKeys(t *testing.T) {
 	_ = meta.CreateBucket(context.Background(), "bkt")
 	objs := newMemStore()
 	for i := 0; i < 10; i++ {
-		key := string(rune('a' + i)) + ".txt"
+		key := string(rune('a'+i)) + ".txt"
 		_, _, _ = objs.Put(context.Background(), "bkt", key, bytes.NewBufferString("x"))
 	}
 	s := New(meta, objs)
@@ -240,11 +340,19 @@ func TestListObjectsV2_MaxKeys(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2&max-keys=3", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	body := w.Body.String()
-	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) { t.Fatalf("expected KeyCount 3: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>true</IsTruncated>")) { t.Fatalf("expected IsTruncated true: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<NextContinuationToken>")) { t.Fatalf("expected NextContinuationToken: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>3</KeyCount>")) {
+		t.Fatalf("expected KeyCount 3: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>true</IsTruncated>")) {
+		t.Fatalf("expected IsTruncated true: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<NextContinuationToken>")) {
+		t.Fatalf("expected NextContinuationToken: %s", body)
+	}
 }
 
 func TestListObjectsV2_Empty(t *testing.T) {
@@ -257,10 +365,16 @@ func TestListObjectsV2_Empty(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/bkt?list-type=2", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	body := w.Body.String()
-	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>0</KeyCount>")) { t.Fatalf("expected KeyCount 0: %s", body) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>false</IsTruncated>")) { t.Fatalf("expected IsTruncated false: %s", body) }
+	if !bytes.Contains(w.Body.Bytes(), []byte("<KeyCount>0</KeyCount>")) {
+		t.Fatalf("expected KeyCount 0: %s", body)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<IsTruncated>false</IsTruncated>")) {
+		t.Fatalf("expected IsTruncated false: %s", body)
+	}
 }
 
 func TestMultipartUpload_Complete(t *testing.T) {
@@ -274,29 +388,37 @@ func TestMultipartUpload_Complete(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploads", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("initiate expected 200, got %d", w.Code) }
-	if !bytes.Contains(w.Body.Bytes(), []byte("<UploadId>")) { t.Fatalf("expected UploadId in response") }
-	
+	if w.Code != 200 {
+		t.Fatalf("initiate expected 200, got %d", w.Code)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("<UploadId>")) {
+		t.Fatalf("expected UploadId in response")
+	}
+
 	// Extract uploadId from response
 	body := w.Body.String()
 	start := bytes.Index(w.Body.Bytes(), []byte("<UploadId>")) + len("<UploadId>")
 	end := bytes.Index(w.Body.Bytes(), []byte("</UploadId>"))
 	uploadID := body[start:end]
-	
+
 	// 2. Upload part 1
 	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString("part1data"))
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("upload part 1 expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("upload part 1 expected 200, got %d", w.Code)
+	}
 	etag1 := strings.Trim(w.Header().Get("ETag"), "\"")
-	
+
 	// 3. Upload part 2
 	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=2", bytes.NewBufferString("part2data"))
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("upload part 2 expected 200, got %d", w.Code) }
+	if w.Code != 200 {
+		t.Fatalf("upload part 2 expected 200, got %d", w.Code)
+	}
 	etag2 := strings.Trim(w.Header().Get("ETag"), "\"")
-	
+
 	// 4. Complete multipart upload
 	completeXML := `<CompleteMultipartUpload>
 		<Part><PartNumber>1</PartNumber><ETag>"` + etag1 + `"</ETag></Part>
@@ -305,14 +427,20 @@ func TestMultipartUpload_Complete(t *testing.T) {
 	r = httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploadId="+uploadID, bytes.NewBufferString(completeXML))
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("complete expected 200, got %d: %s", w.Code, w.Body.String()) }
-	
+	if w.Code != 200 {
+		t.Fatalf("complete expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
 	// 5. Verify final object exists
 	r = httptest.NewRequest(http.MethodGet, "/bkt/large.bin", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("get final object expected 200, got %d", w.Code) }
-	if got := w.Body.String(); got != "part1datapart2data" { t.Fatalf("unexpected final data: %q", got) }
+	if w.Code != 200 {
+		t.Fatalf("get final object expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "part1datapart2data" {
+		t.Fatalf("unexpected final data: %q", got)
+	}
 }
 
 func TestMultipartUpload_ETagPolicy(t *testing.T) {
@@ -389,30 +517,38 @@ func TestMultipartUpload_Abort(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/bkt/large.bin?uploads", nil)
 	w := httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("initiate expected 200, got %d", w.Code) }
-	
+	if w.Code != 200 {
+		t.Fatalf("initiate expected 200, got %d", w.Code)
+	}
+
 	body := w.Body.String()
 	start := bytes.Index(w.Body.Bytes(), []byte("<UploadId>")) + len("<UploadId>")
 	end := bytes.Index(w.Body.Bytes(), []byte("</UploadId>"))
 	uploadID := body[start:end]
-	
+
 	// Upload a part
 	r = httptest.NewRequest(http.MethodPut, "/bkt/large.bin?uploadId="+uploadID+"&partNumber=1", bytes.NewBufferString("testdata"))
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 200 { t.Fatalf("upload part expected 200, got %d", w.Code) }
-	
+	if w.Code != 200 {
+		t.Fatalf("upload part expected 200, got %d", w.Code)
+	}
+
 	// Abort the upload
 	r = httptest.NewRequest(http.MethodDelete, "/bkt/large.bin?uploadId="+uploadID, nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 204 { t.Fatalf("abort expected 204, got %d", w.Code) }
-	
+	if w.Code != 204 {
+		t.Fatalf("abort expected 204, got %d", w.Code)
+	}
+
 	// Verify object was not created
 	r = httptest.NewRequest(http.MethodGet, "/bkt/large.bin", nil)
 	w = httptest.NewRecorder()
 	hs.ServeHTTP(w, r)
-	if w.Code != 404 { t.Fatalf("get after abort expected 404, got %d", w.Code) }
+	if w.Code != 404 {
+		t.Fatalf("get after abort expected 404, got %d", w.Code)
+	}
 }
 
 // helpers
@@ -508,7 +644,6 @@ func extractSingleXMLTag(xmlStr, tag string) string {
 	return vals[0]
 }
 
-
 // --- SigV4 end-to-end tests (header-signed and presigned) ---
 
 func TestSigV4_HeaderAuth_PutAndGet(t *testing.T) {
@@ -532,6 +667,10 @@ func TestSigV4_HeaderAuth_PutAndGet(t *testing.T) {
 	const service = "s3"
 	const amzDate = "20250101T120000Z"
 	const date = "20250101" // scope date
+	restore := sigv4.SetNowFuncForTest(func() time.Time {
+		return time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	})
+	defer restore()
 
 	putBody := "hello-signed"
 	putReq := httptest.NewRequest(http.MethodPut, "http://example.com/bkt/hello.txt", bytes.NewBufferString(putBody))
@@ -606,6 +745,10 @@ func TestSigV4_Presigned_Get(t *testing.T) {
 	const service = "s3"
 	const amzDate = "20250101T120000Z"
 	const date = "20250101"
+	restore := sigv4.SetNowFuncForTest(func() time.Time {
+		return time.Date(2025, 1, 1, 12, 5, 0, 0, time.UTC)
+	})
+	defer restore()
 
 	// Base request
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/bkt/obj.txt", nil)
@@ -614,6 +757,7 @@ func TestSigV4_Presigned_Get(t *testing.T) {
 	q.Set("X-Amz-Credential", ak+"/"+date+"/"+region+"/"+service+"/aws4_request")
 	q.Set("X-Amz-Date", amzDate)
 	q.Set("X-Amz-SignedHeaders", "host")
+	q.Set("X-Amz-Expires", "600")
 	// No X-Amz-Content-Sha256 -> default UNSIGNED-PAYLOAD for GET in presigned path
 	req.URL.RawQuery = q.Encode()
 
@@ -846,7 +990,6 @@ func trimSpacesForTest(s string) string {
 	return b.String()
 }
 
-
 // --- Size limit integration tests ---
 
 func TestSizeLimit_SinglePut_EntityTooLarge(t *testing.T) {
@@ -859,8 +1002,8 @@ func TestSizeLimit_SinglePut_EntityTooLarge(t *testing.T) {
 
 	// Set a very small single PUT cap to trigger EntityTooLarge
 	s := NewWithLimits(meta, objs, Limits{
-		SinglePutMaxBytes:    3,  // bytes
-		MinMultipartPartSize: 5,  // default irrelevant here
+		SinglePutMaxBytes:    3, // bytes
+		MinMultipartPartSize: 5, // default irrelevant here
 	})
 	hs := s.Handler()
 

@@ -29,7 +29,7 @@ type ObjectStore interface {
 	Get(ctx context.Context, bucket, key string) (rc io.ReadCloser, size int64, etag string, lastModified time.Time, err error)
 	Head(ctx context.Context, bucket, key string) (size int64, etag string, lastModified time.Time, err error)
 	Delete(ctx context.Context, bucket, key string) error
-	List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]ObjectMeta, bool, error)
+	List(ctx context.Context, bucket, prefix, startAfter, delimiter string, maxKeys int) ([]ObjectMeta, []string, bool, error)
 	IsBucketEmpty(ctx context.Context, bucket string) (bool, error)
 	RemoveBucket(ctx context.Context, bucket string) error
 }

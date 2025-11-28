@@ -207,13 +207,14 @@ func TestLocalFS_Sealed_ListAndDelete(t *testing.T) {
 	}
 
 	// List should include the sealed object with size/etag from manifest
-	objs, truncated, err := lfs.List(ctx, bucket, "", "", 100)
+	objs, commonPrefixes, truncated, err := lfs.List(ctx, bucket, "", "", "", 100)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if truncated {
 		t.Fatalf("unexpected truncation")
 	}
+	if len(commonPrefixes) > 0 { t.Fatalf("unexpected prefixes") }
 	if len(objs) != 1 || objs[0].Key != key {
 		t.Fatalf("unexpected list result: %+v", objs)
 	}
@@ -365,13 +366,14 @@ func TestLocalFS_List_MixedSealedPlain(t *testing.T) {
 	}
 
 	// List: expect both keys present, ordered, with correct sizes and etags
-	objs, truncated, err := lfs.List(ctx, bucket, "", "", 100)
+	objs, commonPrefixes, truncated, err := lfs.List(ctx, bucket, "", "", "", 100)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if truncated {
 		t.Fatalf("unexpected truncation")
 	}
+	if len(commonPrefixes) > 0 { t.Fatalf("unexpected prefixes") }
 	if len(objs) != 2 {
 		t.Fatalf("expected 2 objects, got %d: %+v", len(objs), objs)
 	}

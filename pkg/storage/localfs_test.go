@@ -19,9 +19,10 @@ func TestLocalFS_List_SkipsMultipart(t *testing.T) {
 		t.Fatalf("Put multipart: %v", err)
 	}
 
-	objs, truncated, err := fs.List(ctx, "bkt", "", "", 100)
+	objs, commonPrefixes, truncated, err := fs.List(ctx, "bkt", "", "", "", 100)
 	if err != nil { t.Fatalf("List: %v", err) }
 	if truncated { t.Fatalf("did not expect truncated") }
+	if len(commonPrefixes) > 0 { t.Fatalf("unexpected prefixes") }
 	if len(objs) != 1 { t.Fatalf("expected 1 object, got %d: %+v", len(objs), objs) }
 	if objs[0].Key != "a.txt" { t.Fatalf("expected key a.txt, got %s", objs[0].Key) }
 }

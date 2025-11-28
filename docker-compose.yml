@@ -5,15 +5,15 @@ services:
     image: shardseal:dev
     container_name: shardseal
     ports:
-      - "8080:8080"   # S3 data-plane
-      - "9090:9090"   # Admin API (if enabled)
+      - "8080:8080"               # S3 data-plane
+      - "${SHARDSEAL_ADMIN_HOST_PORT:-19090}:9090"   # Admin API (admin listener inside container stays on 9090)
     environment:
       # Data-plane listen address
       - SHARDSEAL_ADDR=:8080
       # Enable Admin API on a separate port
       - SHARDSEAL_ADMIN_ADDR=:9090
       # Point to a mounted config file (optional)
-      - SHARDSEAL_CONFIG=/config/config.yaml
+      - SHARDSEAL_CONFIG=/config/local.yaml
 
       # Sealed mode (experimental)
       # - SHARDSEAL_SEALED_ENABLED=true

@@ -13,7 +13,7 @@ import (
 // ManifestFilename is the filename used to persist object manifests alongside data.
 const ManifestFilename = "object.meta"
 
- // ManifestFormatV1 identifies the v1 JSON encoding format for manifests (ShardSeal v1).
+// ManifestFormatV1 identifies the v1 JSON encoding format for manifests (ShardSeal v1).
 const ManifestFormatV1 = "ShardSealv1"
 
 // RSParams describes Reed–Solomon parameters for an object.
@@ -31,7 +31,7 @@ type PartMeta struct {
 	ETag       string `json:"etag"`
 	BlockCount int    `json:"block_count"`
 }
- 
+
 // ShardMeta describes a single sealed shard file in ShardSeal v1.
 // For M1 (single-shard path), an object typically has exactly one shard.
 type ShardMeta struct {
@@ -63,7 +63,7 @@ type Manifest struct {
 	RS           RSParams      `json:"rs_params"`
 	Integrity    IntegrityInfo `json:"integrity,omitempty"`
 	// Sealed shards composing this object (M1: typically 1)
-	Shards       []ShardMeta   `json:"shards,omitempty"`
+	Shards []ShardMeta `json:"shards,omitempty"`
 	// Future fields: placement, encryption, custom metadata, version IDs, etc.
 }
 
@@ -86,7 +86,7 @@ func (m *Manifest) ValidateBasic() error {
 	}
 	return nil
 }
-	
+
 // NewSingleShardManifest constructs a minimal v1 manifest for a single sealed shard.
 // RS parameters should reflect current encoding (M1: K=1, M=0).
 func NewSingleShardManifest(bucket, key string, size int64, etag string, rs RSParams, shard ShardMeta) *Manifest {
@@ -164,6 +164,9 @@ func SaveManifest(ctx context.Context, baseDir, bucket, key string, m *Manifest)
 	}
 	// Atomic rename
 	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	if err := SyncDir(dir); err != nil {
 		return err
 	}
 	// Best-effort timestamp

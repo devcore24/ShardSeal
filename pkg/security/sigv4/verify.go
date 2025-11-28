@@ -10,20 +10,30 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
-// Package sigv4 provides scaffolding for AWS Signature V4 authentication.
-// NOTE: This is an initial scaffold. It currently validates the presence of
-// credentials and known access keys but DOES NOT compute/verify HMAC signatures yet.
-// Do NOT use in production. A full canonical request + signing implementation will follow.
+// Package sigv4 provides request verification for AWS Signature Version 4.
+// It supports header-signed and presigned (query) requests, validates canonical
+// requests, enforces clock-skew and expiration windows, and derives signing keys
+// from static credentials supplied via a CredentialsStore interface.
 
 // Errors returned by the verifier.
 var (
-	ErrAuthMissing     = errors.New("sigv4: missing authorization")
-	ErrAuthInvalid     = errors.New("sigv4: invalid authorization")
-	ErrNotImplemented  = errors.New("sigv4: signature verification not implemented yet")
+	ErrAuthMissing    = errors.New("sigv4: missing authorization")
+	ErrAuthInvalid    = errors.New("sigv4: invalid authorization")
+	ErrRequestExpired = errors.New("sigv4: request expired or not yet valid")
 )
+
+const (
+	amzDateFormat = "20060102T150405Z"
+	maxClockSkew  = 15 * time.Minute
+	maxPresignTTL = 7 * 24 * time.Hour
+)
+
+var nowFunc = time.Now
 
 // CredentialsStore provides a way to look up a secret key by access key.
 type CredentialsStore interface {
@@ -107,6 +117,17 @@ func VerifyRequest(ctx context.Context, r *http.Request, store CredentialsStore)
 		if amzDate == "" {
 			return ErrAuthInvalid
 		}
+		expireStr := q.Get("X-Amz-Expires")
+		if expireStr == "" {
+			return ErrAuthInvalid
+		}
+		expires, err := strconv.ParseInt(expireStr, 10, 64)
+		if err != nil {
+			return ErrAuthInvalid
+		}
+		if err := validateTimestamp(amzDate, expires, nowFunc().UTC()); err != nil {
+			return err
+		}
 
 		signedHeadersCSV := q.Get("X-Amz-SignedHeaders")
 		if signedHeadersCSV == "" {
@@ -159,6 +180,9 @@ func VerifyRequest(ctx context.Context, r *http.Request, store CredentialsStore)
 	if amzDate == "" {
 		return ErrAuthInvalid
 	}
+	if err := validateTimestamp(amzDate, 0, nowFunc().UTC()); err != nil {
+		return err
+	}
 
 	// Determine payload hash
 	payloadHash, phErr := getPayloadHashFromHeaders(r)
@@ -202,7 +226,6 @@ func Middleware(store CredentialsStore, exempt func(*http.Request) bool) func(ht
 		})
 	}
 }
-
 
 // parseCredentialScope returns ak, date(YYYYMMDD), region, service from Credential scope.
 func parseCredentialScope(cred string) (string, string, string, string, error) {
@@ -413,7 +436,7 @@ func uriEncodePath(path string) string {
 		if (c >= 'A' && c <= 'Z') ||
 			(c >= 'a' && c <= 'z') ||
 			(c >= '0' && c <= '9') ||
-		c == '-' || c == '_' || c == '.' || c == '~' {
+			c == '-' || c == '_' || c == '.' || c == '~' {
 			b.WriteByte(c)
 		} else {
 			b.WriteString("%")
@@ -523,4 +546,38 @@ func sha256HexFromReader(r io.Reader) string {
 	h := sha256.New()
 	_, _ = io.Copy(h, r)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func validateTimestamp(amzDate string, expiresSeconds int64, now time.Time) error {
+	ts, err := time.Parse(amzDateFormat, amzDate)
+	if err != nil {
+		return ErrAuthInvalid
+	}
+	ts = ts.UTC()
+	if expiresSeconds <= 0 {
+		if now.Before(ts.Add(-maxClockSkew)) || now.After(ts.Add(maxClockSkew)) {
+			return ErrRequestExpired
+		}
+		return nil
+	}
+	if expiresSeconds > int64(maxPresignTTL/time.Second) {
+		return ErrRequestExpired
+	}
+	window := time.Duration(expiresSeconds) * time.Second
+	if now.Before(ts.Add(-maxClockSkew)) || now.After(ts.Add(window+maxClockSkew)) {
+		return ErrRequestExpired
+	}
+	return nil
+}
+
+// SetNowFuncForTest overrides the clock used by timestamp validation. It returns a restore function.
+// Intended for unit tests only.
+func SetNowFuncForTest(fn func() time.Time) func() {
+	prev := nowFunc
+	if fn == nil {
+		nowFunc = time.Now
+	} else {
+		nowFunc = fn
+	}
+	return func() { nowFunc = prev }
 }

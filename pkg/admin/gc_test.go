@@ -41,7 +41,7 @@ type fakeObjectStore struct {
 	deleted []string
 }
 
-func (f *fakeObjectStore) List(ctx context.Context, bucket, prefix, startAfter string, maxKeys int) ([]storage.ObjectMeta, bool, error) {
+func (f *fakeObjectStore) List(ctx context.Context, bucket, prefix, startAfter, delimiter string, maxKeys int) ([]storage.ObjectMeta, []string, bool, error) {
 	var out []storage.ObjectMeta
 	if f.objects != nil {
 		for _, o := range f.objects[bucket] {
@@ -53,8 +53,8 @@ func (f *fakeObjectStore) List(ctx context.Context, bucket, prefix, startAfter s
 			}
 		}
 	}
-	// Simplify: never truncate in fake
-	return out, false, nil
+	// Simplify: never truncate in fake, no delimiter support
+	return out, nil, false, nil
 }
 
 func (f *fakeObjectStore) Delete(ctx context.Context, bucket, key string) error {

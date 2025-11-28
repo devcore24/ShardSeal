@@ -3,24 +3,29 @@
 Status: reflects recent changes (repair enqueue integration and S3-compatible multipart ETag).
 
 - Completed
+  - ListObjectsV2: implemented delimiter/common prefixes for S3 parity.
   - Storage enqueues repair items on sealed integrity failures during GET/HEAD.
   - Scrubber enqueues failing shards into a repair queue.
   - Admin wiring: when Admin API is enabled, a repair queue is created, metrics are exported, and a background repair worker (no-op) starts with admin controls (stats/pause/resume).
+  - Repair queue can be enabled via config even when the Admin API is disabled (`repair.enabled` / `SHARDSEAL_REPAIR_ENABLED`), ensuring storage/scrubber enqueue paths never fail and metrics stay available.
+  - Minimal single-shard repair rewrite: worker regenerates sealed headers/footers, verifies payload hashes, updates manifests, and emits success/failure metrics.
+  - SigV4 hardening: enforce clock-skew windows, validate X-Amz-Expires, expanded canonicalization coverage, and new tests.
+  - Manifest durability: fsync manifest directories after atomic renames and reuse helper in repair rewrites.
+  - Repair queue priorities/metrics: reason-aware priority mapping plus enqueued/completed/duration Prometheus series for dashboards.
   - Multipart completion returns S3-compatible ETag (MD5 of part ETags with -N suffix).
   - Docs updated (README/project) to reflect repair pipeline and multipart ETag behavior.
 
 - High Priority (Next)
-  - Repair worker minimal rewrite for single-shard sealed objects (safety checks, idempotent rewrite, metrics); keep no-op as fallback when unsafe.
-  - Make repair queue available even without Admin API (config toggle) so storage/scrubber enqueues are always accepted.
-  - ListObjectsV2: implement delimiter/common prefixes for S3 parity.
-  - SigV4 hardening: update package comment to match implementation, add clock-skew window and X-Amz-Expires validation; expand tests for canonicalization edge cases.
-  - Storage/manifest durability: fsync manifest directory on atomic rename to harden against crashes.
+  - Repair worker: extend to multi-shard/RS layouts (streaming reconstruction, retry/backoff semantics, metrics per shard).
+  - Repair orchestrator: expose rate limits and scheduling knobs that honor queue priorities + depth histograms surfaced via admin/metrics.
+  - Storage durability: audit remaining data-path renames (e.g., shard rewrites, plain PUTs) and add fsync coverage / failure injection tests.
+  - SigV4 enhancements: chunked upload coverage, session-token handling, and fuzzing of canonicalization edge cases.
 
 - Short Term Enhancements
   - Observability: add S3 op-level metrics (get/put/head/delete/list/multipart) with low-cardinality labels.
   - Admin: add scrubber pause/resume endpoints; keep stats/runonce.
   - Sealed range tests: add range GET tests for sealed objects; verify SectionReader path.
-  - Docs: add a short “Repair pipeline” section with example admin requests; note queue depth metric usage in Grafana.
+  - Docs: capture repair queue configuration + dashboards (including admin host-port override) in a short guide so operators can wire alerts quickly.
 
 - Medium Term (Core)
   - Real RS codec (klauspost/reedsolomon or similar) and wire encoding/decoding; multi-shard manifests; reconstruct on read.
