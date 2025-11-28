@@ -14,6 +14,7 @@ Status: reflects recent changes (repair enqueue integration and S3-compatible mu
   - Repair queue priorities/metrics: reason-aware priority mapping plus enqueued/completed/duration Prometheus series for dashboards.
   - Multipart completion returns S3-compatible ETag (MD5 of part ETags with -N suffix).
   - Docs updated (README/project) to reflect repair pipeline and multipart ETag behavior.
+  - Fixed sealed shard header encoder padding so repaired shards align with manifest metadata; added regression coverage to guard the invariant.
 
 - High Priority (Next)
   - Repair worker: extend to multi-shard/RS layouts (streaming reconstruction, retry/backoff semantics, metrics per shard).

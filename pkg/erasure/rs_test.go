@@ -36,6 +36,55 @@ func TestShardHeader_EncodeDecode_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestShardHeader_EncodedLengthMatchesHeaderSize(t *testing.T) {
+	t.Run("default size", func(t *testing.T) {
+		h := ShardHeader{
+			Version:       shardHeaderVersion,
+			HeaderSize:    0,    // expect default (28)
+			PayloadLength: 42,
+		}
+		enc, err := EncodeShardHeader(h)
+		if err != nil {
+			t.Fatalf("EncodeShardHeader: %v", err)
+		}
+		if len(enc) != 28 {
+			t.Fatalf("encoded length mismatch: got=%d want=28", len(enc))
+		}
+		dec, err := DecodeShardHeader(bytes.NewReader(enc))
+		if err != nil {
+			t.Fatalf("DecodeShardHeader: %v", err)
+		}
+		if dec.HeaderSize != 28 {
+			t.Fatalf("decoded HeaderSize mismatch: got=%d want=28", dec.HeaderSize)
+		}
+	})
+
+	t.Run("custom padded size", func(t *testing.T) {
+		const headerSize = 48
+		h := ShardHeader{
+			Version:       shardHeaderVersion,
+			HeaderSize:    headerSize,
+			PayloadLength: 128,
+		}
+		enc, err := EncodeShardHeader(h)
+		if err != nil {
+			t.Fatalf("EncodeShardHeader: %v", err)
+		}
+		if len(enc) != headerSize {
+			t.Fatalf("encoded length mismatch: got=%d want=%d", len(enc), headerSize)
+		}
+		minLen := len(shardSealMagic) + 2 + 2 + 8 + 4
+		for i := minLen; i < len(enc); i++ {
+			if enc[i] != 0 {
+				t.Fatalf("expected zero padding at byte %d, got %x", i, enc[i])
+			}
+		}
+		if _, err := DecodeShardHeader(bytes.NewReader(enc)); err != nil {
+			t.Fatalf("DecodeShardHeader: %v", err)
+		}
+	})
+}
+
 func TestShardHeader_DetectsTamper(t *testing.T) {
 	h := ShardHeader{
 		Version:       shardHeaderVersion,

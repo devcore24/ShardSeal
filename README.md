@@ -550,6 +550,10 @@ When enabled, the server requires valid AWS Signature V4 on S3 requests (both Au
   - Grafana panels for repair queue depth (stat and timeseries)
 - Documentation: Admin endpoints, RBAC roles, and monitoring sections updated to reflect current state.
 
+## Recent Improvements (2025-11-02)
+- Fixed the sealed shard header encoder so the emitted byte length always matches the advertised header size, preventing payload shifts after repairs or rewrites.
+- Added regression testing around header-size invariants to catch future encoder regressions early.
+
 ## Roadmap (short)
 1) ShardSeal v1 storage format + erasure coding
 2) Background scrubber and self-healing
