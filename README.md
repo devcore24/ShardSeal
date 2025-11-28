@@ -204,14 +204,14 @@ Notes:
 - The provided [docker-compose.yml](docker-compose.yml:1) includes commented environment toggles for sealed mode, scrubber, tracing, admin OIDC, and GC; uncomment to enable as needed.
 
 ### Admin repair examples
-Enable Admin API (e.g., `SHARDSEAL_ADMIN_ADDR=:9090`). If OIDC is enabled, include a valid Bearer token; otherwise these endpoints are unauthenticated. When using the provided docker-compose file, replace `localhost:9090` below with `localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}` (default 19090).
+Enable Admin API (e.g., `SHARDSEAL_ADMIN_ADDR=:9090`). If OIDC is enabled, include a valid Bearer token; otherwise these endpoints are unauthenticated. When using the provided docker-compose file, ShardSeal publishes the admin listener on host port `${SHARDSEAL_ADMIN_HOST_PORT:-19090}` (default 19090), so use `http://localhost:19090/admin/health` (or whichever host port you exported) when running health checks from the host.
 
 ```bash
 # Queue length
-curl -s http://localhost:9090/admin/repair/stats
+curl -s http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/stats
 
 # Enqueue a repair item (e.g., detected externally)
-curl -s -X POST http://localhost:9090/admin/repair/enqueue \
+curl -s -X POST http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/enqueue \
   -H 'Content-Type: application/json' \
   -d '{
     "bucket":"bkt",
@@ -221,20 +221,20 @@ curl -s -X POST http://localhost:9090/admin/repair/enqueue \
   }'
 
 # Scrubber controls
-curl -s http://localhost:9090/admin/scrub/stats
-curl -s -X POST http://localhost:9090/admin/scrub/runonce
+curl -s http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/scrub/stats
+curl -s -X POST http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/scrub/runonce
 
 # Repair worker controls
-curl -s http://localhost:9090/admin/repair/worker/stats
-curl -s -X POST http://localhost:9090/admin/repair/worker/pause
-curl -s -X POST http://localhost:9090/admin/repair/worker/resume
+curl -s http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/worker/stats
+curl -s -X POST http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/worker/pause
+curl -s -X POST http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/worker/resume
 ```
 
 #### Notes on authentication (OIDC)
 - Enable OIDC via config (`oidc.*`) or env (`SHARDSEAL_OIDC_*`). Set `issuer` (or `jwksURL`) and expected `clientID`/`audience`.
 - Obtain a JWT from your IdP (ID token or access token) whose `aud` matches the configured audience.
 - Pass the token in the `Authorization` header:
-  - Example: `curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/admin/repair/stats`
+  - Example: `curl -H "Authorization: Bearer $TOKEN" http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/repair/stats`
 - Health/version exemptions: if configured, `/admin/health` and `/admin/version` can be accessed without a token.
 - RBAC: endpoints require roles like `admin.read`, `admin.scrub`, `admin.repair.*` (see `pkg/security/oidc/rbac.go`).
 
@@ -286,7 +286,7 @@ docker compose --profile monitoring up -d
 
 # Access:
 # - ShardSeal (S3 plane): http://localhost:8080
-# - ShardSeal Admin (if enabled): http://localhost:9090
+# - ShardSeal Admin (if enabled): http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/health
 # - Prometheus: http://localhost:9091
 # - Grafana: http://localhost:3000  (default admin/admin)
 #   Add Prometheus data source at http://prometheus:9090 and import the dashboard:
@@ -318,7 +318,7 @@ docker compose --profile monitoring up -d
 
 Validation
 - ShardSeal: http://localhost:8080
-- Admin (if enabled): http://localhost:9090
+- Admin (if enabled): http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/health (default 19090 when using docker compose; use the admin host port you configured otherwise)
 - Prometheus: http://localhost:9091 (Targets page should show shardseal:8080 as UP)
 - Grafana: http://localhost:3000 (default admin/admin). Add Prometheus datasource at URL http://prometheus:9090 and import dashboard from configs/monitoring/grafana/shardseal_overview.json
 

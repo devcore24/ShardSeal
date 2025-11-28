@@ -868,7 +868,7 @@ This repository includes an optional Prometheus + Grafana stack controlled via D
 - Prometheus target: [configs/monitoring/prometheus/prometheus.yml](configs/monitoring/prometheus/prometheus.yml:1) scrapes "shardseal:8080" (service DNS on the Docker network), not "localhost".
 - Access:
   - ShardSeal (S3 plane): http://localhost:8080
-  - ShardSeal Admin (if enabled): http://localhost:9090
+  - ShardSeal Admin (if enabled): http://localhost:${SHARDSEAL_ADMIN_HOST_PORT:-19090}/admin/health
   - Prometheus: http://localhost:9091
   - Grafana: http://localhost:3000 (default admin/admin). Configure a data source pointing to http://prometheus:9090.
 
